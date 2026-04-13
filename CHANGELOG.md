@@ -5,6 +5,13 @@
 
 ### Features
 
+* 🎸 Add initialization for ModelsBar macOS application ([40f46b6](https://github.com/htnanako/ModelsBar/commit/40f46b6b0c5ab02a52076c97b97cdb5def9e9be0))
+
+## 1.0.0 (2026-04-13)
+
+
+### Features
+
 * 🎸 Add initialization for ModelsBar macOS application ([b05a3e0](https://github.com/htnanako/ModelsBar/commit/b05a3e0fefd86e1006841caa71100b16e5c3d587))
 
 ## 1.0.0 (2026-04-13)
