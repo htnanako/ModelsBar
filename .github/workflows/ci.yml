@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - CHANGELOG.md
+      - README.md
+      - README_zh.md
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-package:
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Run build
+        run: swift build -c release
+
+      - name: Resolve app version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(awk -F '=' '/MARKETING_VERSION/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' Config/Versions.xcconfig)"
+          if [ -z "$VERSION" ]; then
+            echo "Unable to resolve MARKETING_VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test app packaging
+        run: |
+          ./Scripts/package-app.sh \
+            --configuration release \
+            --version "${{ steps.version.outputs.version }}" \
+            --build-number 0 \
+            --bundle-id "dev.nanako.ModelsBar.ci" \
+            --output-dir "$PWD/dist/ci"
+
+      - name: Smoke test dmg packaging
+        run: |
+          ./Scripts/create-dmg.sh \
+            --app-path "$PWD/dist/ci/ModelsBar.app" \
+            --output-path "$PWD/dist/ModelsBar-ci.dmg" \
+            --volume-name "ModelsBar CI"

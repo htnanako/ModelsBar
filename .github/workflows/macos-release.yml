@@ -1,0 +1,189 @@
+name: Build macOS & Publish Release
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  APP_NAME: ModelsBar
+
+jobs:
+  prepare-tag:
+    name: Prepare release tag
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+
+    steps:
+      - name: Checkout merged release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          TAG="$(printf "%s" "$PR_TITLE" | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?' | head -n 1 || true)"
+          if [ -z "$TAG" ]; then
+            echo "Unable to determine release tag from PR title: $PR_TITLE" >&2
+            exit 1
+          fi
+          if [[ "$TAG" != v* ]]; then
+            TAG="v$TAG"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure git tag exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists: $TAG"
+          else
+            gh api "repos/${{ github.repository }}/git/refs" \
+              -f ref="refs/tags/$TAG" \
+              -f sha="$TARGET_SHA" >/dev/null
+            echo "Created tag: $TAG -> $TARGET_SHA"
+          fi
+
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--')
+    runs-on: ${{ matrix.runs-on }}
+    needs: prepare-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: macos-15-intel
+            arch: x64
+          - runs-on: macos-15
+            arch: arm64
+
+    steps:
+      - name: Checkout merged release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build app bundle
+        run: |
+          ./Scripts/package-app.sh \
+            --configuration release \
+            --version "${{ needs.prepare-tag.outputs.version }}" \
+            --build-number "${{ github.run_number }}" \
+            --bundle-id "dev.nanako.ModelsBar" \
+            --output-dir "$PWD/dist/release/${{ matrix.arch }}"
+
+      - name: Create dmg
+        run: |
+          ./Scripts/create-dmg.sh \
+            --app-path "$PWD/dist/release/${{ matrix.arch }}/${{ env.APP_NAME }}.app" \
+            --output-path "$PWD/dist/release/${{ env.APP_NAME }}-${{ needs.prepare-tag.outputs.version }}-macOS-${{ matrix.arch }}.dmg" \
+            --volume-name "${{ env.APP_NAME }} ${{ needs.prepare-tag.outputs.version }}"
+
+      - name: Generate checksum
+        run: |
+          shasum -a 256 "$PWD/dist/release/${{ env.APP_NAME }}-${{ needs.prepare-tag.outputs.version }}-macOS-${{ matrix.arch }}.dmg" \
+            > "$PWD/dist/release/${{ env.APP_NAME }}-${{ needs.prepare-tag.outputs.version }}-macOS-${{ matrix.arch }}.dmg.sha256"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-macOS-${{ matrix.arch }}
+          path: |
+            dist/release/${{ env.APP_NAME }}-${{ needs.prepare-tag.outputs.version }}-macOS-${{ matrix.arch }}.dmg
+            dist/release/${{ env.APP_NAME }}-${{ needs.prepare-tag.outputs.version }}-macOS-${{ matrix.arch }}.dmg.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--')
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-tag
+      - build-macos
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-tag.outputs.tag }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PR_BODY:-}" ]; then
+            printf "%s\n" "$PR_BODY" \
+              | sed -n '/^## /,$p' \
+              | sed '/^---$/,$d' > release-notes.md
+          else
+            : > release-notes.md
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            if [ -s release-notes.md ]; then
+              gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --title "$RELEASE_TAG" --notes-file release-notes.md
+            else
+              gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --title "$RELEASE_TAG"
+            fi
+            gh release upload "$RELEASE_TAG" dist/release/* --repo "$GH_REPO" --clobber
+          else
+            if [ -s release-notes.md ]; then
+              gh release create "$RELEASE_TAG" dist/release/* --repo "$GH_REPO" --title "$RELEASE_TAG" --notes-file release-notes.md --target "$TARGET_SHA"
+            else
+              gh release create "$RELEASE_TAG" dist/release/* --repo "$GH_REPO" --title "$RELEASE_TAG" --generate-notes --target "$TARGET_SHA"
+            fi
+          fi
+
+      - name: Mark release PR as tagged
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if ! gh label list --repo "$GH_REPO" | grep -q '^autorelease: tagged[[:space:]]'; then
+            gh label create "autorelease: tagged" \
+              --repo "$GH_REPO" \
+              --color "0e8a16" \
+              --description "release is tagged"
+          fi
+
+          gh pr edit "$PR_NUMBER" \
+            --repo "$GH_REPO" \
+            --remove-label "autorelease: pending" \
+            --add-label "autorelease: tagged"

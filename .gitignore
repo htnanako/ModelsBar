@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+
+# App bundles and archives
+*.app
+*.dSYM
+*.dSYM.zip
+*.ipa
+*.xcarchive
+
+# Build outputs and logs
+build/
+dist/
+coverage/
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Temporary files
+.local/
+*.swp
+*.swo
+*~
