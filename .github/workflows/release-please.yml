@@ -1,0 +1,67 @@
+name: Release PR
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release-pr-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-please:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare release-please config
+        run: |
+          set -euo pipefail
+          LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1 || true)"
+          if [ -n "$LATEST_TAG" ]; then
+            CURRENT_VERSION="${LATEST_TAG#v}"
+          else
+            CURRENT_VERSION="$(awk -F '=' '/MARKETING_VERSION/ { gsub(/[[:space:]]/, "", $2); gsub(/\/\/.*/, "", $2); print $2; exit }' Config/Versions.xcconfig)"
+          fi
+
+          cat > /tmp/release-please-config.json <<'JSON'
+          {
+            "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+            "packages": {
+              ".": {
+                "release-type": "simple",
+                "changelog-path": "CHANGELOG.md",
+                "extra-files": [
+                  "Config/Versions.xcconfig"
+                ]
+              }
+            }
+          }
+          JSON
+
+          cat > /tmp/release-please-manifest.json <<JSON
+          {
+            ".": "$CURRENT_VERSION"
+          }
+          JSON
+
+      - name: Create or update Release PR
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: /tmp/release-please-config.json
+          manifest-file: /tmp/release-please-manifest.json
+          release-type: simple
+          skip-github-release: true
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
