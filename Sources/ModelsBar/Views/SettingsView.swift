@@ -285,6 +285,7 @@ private struct ProviderDetailView: View {
     @State private var showingDeleteConfirmation = false
     @State private var showingConnectivitySheet = false
     @State private var showingEditSheet = false
+    @State private var showingAddKeySheet = false
     @State private var connectivityInitialKeyID: UUID?
 
     let providerID: UUID
@@ -306,6 +307,10 @@ private struct ProviderDetailView: View {
                     initialKeyID: connectivityInitialKeyID
                 )
                 .environmentObject(state)
+            }
+            .sheet(isPresented: $showingAddKeySheet) {
+                AddAPIKeySheet(providerID: providerID)
+                    .environmentObject(state)
             }
             .confirmationDialog("删除这个站点？", isPresented: $showingDeleteConfirmation) {
                 Button("删除站点", role: .destructive) {
@@ -368,6 +373,13 @@ private struct ProviderDetailView: View {
                     Task { await state.syncManagedTokens(providerID: providerID) }
                 }
                 .disabled(state.isWorking)
+
+                if provider.type == .openAICompatible {
+                    SettingsActionButton(title: "添加 Key", systemImage: "plus") {
+                        showingAddKeySheet = true
+                    }
+                    .disabled(state.isWorking)
+                }
 
                 SettingsActionButton(title: "模型连通性", systemImage: "waveform.path.ecg.rectangle") {
                     openConnectivitySheet(for: provider.keys.first?.id)
@@ -475,6 +487,10 @@ private struct ProviderDetailView: View {
             return provider.keys.isEmpty
                 ? "同步管理密钥后会自动拉取 CLI Proxy API 下的全部 API Keys。"
                 : "\(provider.keys.count) 个 API Key"
+        case .openAICompatible:
+            return provider.keys.isEmpty
+                ? "手动添加 API Key 后即可刷新模型并进行双接口测试。"
+                : "\(provider.keys.count) 个 API Key"
         case .sub2api:
             if provider.sub2APIAuthorized == false {
                 return "导入 Sub2API 登录态后即可同步账号下的全部 Key。"
@@ -491,6 +507,8 @@ private struct ProviderDetailView: View {
             return "配置系统访问令牌和用户ID后，同步即可拉取 Key。"
         case .cliProxy:
             return "配置 BaseURL 和管理密钥后，同步即可拉取 API Keys。"
+        case .openAICompatible:
+            return "先点击上方“添加 Key”，再刷新模型列表。"
         case .sub2api:
             return provider.sub2APIAuthorized ? "点击同步数据即可拉取 Key。" : "先导入 Sub2API 登录态，再同步账号下的全部 Key。"
         }
@@ -502,6 +520,8 @@ private struct ProviderDetailView: View {
             return "API Keys"
         case .cliProxy:
             return "CLI Proxy API Keys"
+        case .openAICompatible:
+            return "API Keys"
         case .sub2api:
             return "Sub2API Keys"
         }
@@ -706,7 +726,7 @@ private struct APIKeyRow: View {
     }
 
     private var supportsManualKeyEditing: Bool {
-        providerType == .newapi
+        providerType == .newapi || providerType == .openAICompatible
     }
 
     private func canCopyAPIKey(_ apiKey: APIKeyConfig) -> Bool {
@@ -889,6 +909,8 @@ private struct ModelConnectivitySheet: View {
             return "先同步系统访问令牌，或手动添加一个 Key。"
         case .cliProxy:
             return "先同步 CLI Proxy API 管理端里的 API Keys。"
+        case .openAICompatible:
+            return "先手动添加一个 API Key，再刷新模型列表。"
         case .sub2api:
             return "先完成授权并同步账号 Keys。"
         }
@@ -2110,6 +2132,82 @@ private func validateSub2APIAuthorizationDraft(
     return (session, draft)
 }
 
+private struct AddAPIKeySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var state: ModelsBarState
+    @State private var name = ""
+    @State private var apiKey = ""
+    @State private var isSaving = false
+
+    let providerID: UUID
+
+    var body: some View {
+        ZStack {
+            SettingsWindowBackground()
+
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("添加 API Key")
+                        .font(.title3.weight(.semibold))
+                    Text("新增后会立即刷新这个 Key 的模型列表，并接入现有的双接口测试。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                SettingsFieldBlock(title: "名称") {
+                    SettingsTextField(text: $name, placeholder: defaultKeyName)
+                }
+
+                SettingsFieldBlock(title: "API Key") {
+                    SettingsTextField(
+                        text: $apiKey,
+                        placeholder: "sk-... 或其他兼容 Key",
+                        monospaced: true,
+                        enablesSelection: true
+                    )
+                }
+
+                HStack {
+                    SettingsActionButton(title: "取消", systemImage: "xmark") {
+                        dismiss()
+                    }
+                    .disabled(isSaving)
+
+                    Spacer(minLength: 0)
+
+                    SettingsActionButton(title: isSaving ? "添加中" : "添加 Key", systemImage: "plus") {
+                        isSaving = true
+
+                        Task { @MainActor in
+                            let keyID = state.addKey(
+                                providerID: providerID,
+                                name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultKeyName : name,
+                                value: apiKey
+                            )
+                            await state.refreshKeyInfo(providerID: providerID, keyID: keyID)
+                            isSaving = false
+                            dismiss()
+                        }
+                    }
+                    .disabled(isSaving || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(28)
+            .frame(width: 480)
+        }
+        .onAppear {
+            if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                name = defaultKeyName
+            }
+        }
+    }
+
+    private var defaultKeyName: String {
+        let nextIndex = (state.provider(id: providerID)?.keys.count ?? 0) + 1
+        return "API Key \(nextIndex)"
+    }
+}
+
 private struct EditProviderSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var state: ModelsBarState
@@ -2173,6 +2271,16 @@ private struct EditProviderSheet: View {
                             SettingsTextField(text: $managementUserID, placeholder: "用户ID")
                         }
                     }
+                } else if providerType == .openAICompatible {
+                    SettingsFieldBlock(title: "API Key") {
+                        Text("这个类型的 API Keys 在站点详情页中单独管理。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(SettingsInputBackground())
+                    }
                 } else {
                     Sub2APIAuthorizationImportSection(
                         accessToken: $sub2APIAccessToken,
@@ -2212,6 +2320,9 @@ private struct EditProviderSheet: View {
                                     validatedSub2APIAuthorization = nil
                                     validatedSub2APIDraft = nil
                                 case .cliProxy:
+                                    validatedSub2APIAuthorization = nil
+                                    validatedSub2APIDraft = nil
+                                case .openAICompatible:
                                     validatedSub2APIAuthorization = nil
                                     validatedSub2APIDraft = nil
                                 case .sub2api:
@@ -2255,6 +2366,15 @@ private struct EditProviderSheet: View {
 
                                     case .cliProxy:
                                         provider.managementToken = nextManagementToken
+                                        provider.managementUserID = nil
+                                        provider.accountQuota = nil
+                                        provider.sub2APIAccessToken = nil
+                                        provider.sub2APIRefreshToken = nil
+                                        provider.sub2APITokenExpiresAt = nil
+                                        provider.sub2APIUser = nil
+
+                                    case .openAICompatible:
+                                        provider.managementToken = nil
                                         provider.managementUserID = nil
                                         provider.accountQuota = nil
                                         provider.sub2APIAccessToken = nil
@@ -2343,6 +2463,8 @@ private struct EditProviderSheet: View {
         case .cliProxy:
             return trimmedBaseURL.isEmpty ||
                 managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .openAICompatible:
+            return trimmedBaseURL.isEmpty
         case .sub2api:
             return trimmedBaseURL.isEmpty ||
                 normalizedSub2APIField(sub2APIAccessToken).isEmpty ||
@@ -2365,6 +2487,8 @@ private struct EditProviderSheet: View {
             return "更新站点信息后，可继续在主页同步账号额度、Key 额度和模型。"
         case .cliProxy:
             return "更新 BaseURL 或管理密钥后，可继续同步 API Keys 并刷新模型。"
+        case .openAICompatible:
+            return "更新名称或 BaseURL 后，可继续手动管理多个 API Key 并刷新模型。"
         case .sub2api:
             return "更新 BaseURL 或重新导入登录态后，可继续同步账号余额、Keys 和模型。"
         }
@@ -2379,6 +2503,7 @@ private struct AddProviderSheet: View {
     @State private var baseURL = ""
     @State private var managementToken = ""
     @State private var managementUserID = ""
+    @State private var apiKey = ""
     @State private var sub2APIAccessToken = ""
     @State private var sub2APIRefreshToken = ""
     @State private var sub2APITokenExpiresAt = ""
@@ -2432,6 +2557,15 @@ private struct AddProviderSheet: View {
                             SettingsTextField(text: $managementUserID, placeholder: "用户ID")
                         }
                     }
+                } else if providerType == .openAICompatible {
+                    SettingsFieldBlock(title: "API Key") {
+                        SettingsTextField(
+                            text: $apiKey,
+                            placeholder: "sk-... 或其他兼容 Key",
+                            monospaced: true,
+                            enablesSelection: true
+                        )
+                    }
                 } else {
                     Sub2APIAuthorizationImportSection(
                         accessToken: $sub2APIAccessToken,
@@ -2474,6 +2608,12 @@ private struct AddProviderSheet: View {
                                         baseURL: CLIProxyManagementClient.normalizedBaseURLString(baseURL),
                                         managementToken: managementToken,
                                         managementUserID: ""
+                                    )
+                                case .openAICompatible:
+                                    providerID = state.addOpenAICompatibleProvider(
+                                        name: name,
+                                        baseURL: baseURL,
+                                        apiKey: apiKey
                                     )
                                 case .sub2api:
                                     let validation = try await validateSub2APIAuthorizationDraft(
@@ -2526,6 +2666,9 @@ private struct AddProviderSheet: View {
         case .cliProxy:
             return trimmedBaseURL.isEmpty ||
                 managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .openAICompatible:
+            return trimmedBaseURL.isEmpty ||
+                apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .sub2api:
             return trimmedBaseURL.isEmpty ||
                 normalizedSub2APIField(sub2APIAccessToken).isEmpty ||
@@ -2548,6 +2691,8 @@ private struct AddProviderSheet: View {
             return "保存后会立即同步账号额度、Key 额度和模型。"
         case .cliProxy:
             return "保存后会立即同步 API Keys，并开始刷新模型列表。"
+        case .openAICompatible:
+            return "保存后会立即添加第一个 API Key，并开始刷新模型列表。"
         case .sub2api:
             return "保存后会立即同步账号余额、Key 额度和模型。"
         }

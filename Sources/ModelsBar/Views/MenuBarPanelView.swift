@@ -125,7 +125,7 @@ struct MenuBarPanelView: View {
         Group {
             if state.data.providers.isEmpty {
                 CompactMenuPanel {
-                    Text("先在设置里添加站点并配置系统令牌或 Sub2API 登录态。")
+                    Text("先在设置里添加站点，并配置系统令牌、登录态，或直接添加 OpenAI 兼容 API Key。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -284,7 +284,7 @@ struct MenuBarPanelView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .help("同步当前站点的账号额度、Keys、Key 额度和可用模型")
+                .help(syncButtonHelp(provider))
                 .disabled(state.isWorking)
             }
 
@@ -322,8 +322,23 @@ struct MenuBarPanelView: View {
             return "这个站点下还没有 Key。"
         case .cliProxy:
             return "点击同步后会拉取 CLI Proxy API 管理端里的全部 API Keys。"
+        case .openAICompatible:
+            return "先到设置里手动添加 API Key，再点击刷新模型。"
         case .sub2api:
             return provider.sub2APIAuthorized ? "点击同步后会拉取账号下的全部 Key。" : "先到设置里导入 Sub2API 登录态。"
+        }
+    }
+
+    private func syncButtonHelp(_ provider: ProviderConfig) -> String {
+        switch provider.type {
+        case .newapi:
+            return "同步当前站点的账号额度、Keys、Key 额度和可用模型"
+        case .cliProxy:
+            return "同步 CLI Proxy API 管理端中的 API Keys，并刷新模型"
+        case .openAICompatible:
+            return "刷新当前站点下全部手动维护 Key 的模型列表"
+        case .sub2api:
+            return "同步当前站点的账号余额、Keys、Key 额度和可用模型"
         }
     }
 

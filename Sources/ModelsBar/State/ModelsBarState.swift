@@ -204,6 +204,27 @@ final class ModelsBarState: ObservableObject {
         return provider.id
     }
 
+    @discardableResult
+    func addOpenAICompatibleProvider(name: String, baseURL: String, apiKey: String) -> UUID {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let provider = ProviderConfig(
+            type: .openAICompatible,
+            name: trimmedName.isEmpty ? ProviderType.openAICompatible.defaultProviderName : trimmedName,
+            baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            keys: [
+                APIKeyConfig(
+                    name: "API Key 1",
+                    value: trimmedAPIKey
+                )
+            ]
+        )
+        data.providers.append(provider)
+        selectedProviderID = provider.id
+        persist()
+        return provider.id
+    }
+
     func clearProviderSyncResults(_ providerID: UUID) {
         data.modelRecords.removeAll { $0.providerID == providerID }
         data.quotaRecords.removeAll { $0.providerID == providerID }
@@ -248,14 +269,18 @@ final class ModelsBarState: ObservableObject {
         persist()
     }
 
-    func addKey(providerID: UUID, name: String, value: String) {
+    @discardableResult
+    func addKey(providerID: UUID, name: String, value: String) -> UUID {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyID = UUID()
         updateProvider(providerID) { provider in
             provider.keys.append(APIKeyConfig(
+                id: keyID,
                 name: trimmedName.isEmpty ? "Default Token" : trimmedName,
                 value: value.trimmingCharacters(in: .whitespacesAndNewlines)
             ))
         }
+        return keyID
     }
 
     func deleteKey(providerID: UUID, keyID: UUID) {
@@ -281,12 +306,18 @@ final class ModelsBarState: ObservableObject {
     }
 
     func completeManualKey(providerID: UUID, keyID: UUID, value: String) {
-        guard let provider = provider(id: providerID), provider.type == .newapi else {
+        guard let provider = provider(id: providerID),
+              provider.type == .newapi || provider.type == .openAICompatible else {
             return
         }
 
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed.hasPrefix("sk-") ? String(trimmed.dropFirst(3)) : trimmed
+        let normalized: String
+        if provider.type == .newapi {
+            normalized = trimmed.hasPrefix("sk-") ? String(trimmed.dropFirst(3)) : trimmed
+        } else {
+            normalized = trimmed
+        }
         guard normalized.isEmpty == false else {
             return
         }
@@ -299,16 +330,20 @@ final class ModelsBarState: ObservableObject {
             key.updatedAt = .now
         }
 
-        let remainingManualCount = self.provider(id: providerID)?.keys.filter(\.requiresManualCompletion).count ?? 0
-        updateProvider(providerID) { provider in
-            provider.requiresManualKeyCompletion = remainingManualCount > 0
-            provider.lastStatusMessage = remainingManualCount > 0
-                ? "还有 \(remainingManualCount) 个 Key 需要手动补全"
-                : nil
+        if provider.type == .newapi {
+            let remainingManualCount = self.provider(id: providerID)?.keys.filter(\.requiresManualCompletion).count ?? 0
+            updateProvider(providerID) { provider in
+                provider.requiresManualKeyCompletion = remainingManualCount > 0
+                provider.lastStatusMessage = remainingManualCount > 0
+                    ? "还有 \(remainingManualCount) 个 Key 需要手动补全"
+                    : nil
+            }
+            statusMessage = remainingManualCount > 0
+                ? "已补全 Key，还有 \(remainingManualCount) 个待补全"
+                : "已补全 Key，请刷新额度和模型"
+        } else {
+            statusMessage = "已更新 Key，请刷新模型"
         }
-        statusMessage = remainingManualCount > 0
-            ? "已补全 Key，还有 \(remainingManualCount) 个待补全"
-            : "已补全 Key，请刷新额度和模型"
     }
 
     func moveKey(providerID: UUID, keyID: UUID, before targetKeyID: UUID) {
@@ -412,6 +447,8 @@ final class ModelsBarState: ObservableObject {
             await syncSub2APIManagedTokens(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         case .cliProxy:
             await syncCLIProxyManagedTokens(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
+        case .openAICompatible:
+            await syncOpenAICompatibleKeys(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         }
     }
 
@@ -449,6 +486,8 @@ final class ModelsBarState: ObservableObject {
             await refreshSub2APIAccountQuota(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         case .cliProxy:
             setStatus("CLI Proxy API 暂不提供账号额度信息", providerID: providerID)
+        case .openAICompatible:
+            setStatus("OpenAI Compatible 直连站点暂不提供账号额度信息", providerID: providerID)
         }
     }
 
@@ -463,6 +502,10 @@ final class ModelsBarState: ObservableObject {
         case .sub2api:
             await refreshSub2APIQuota(providerID: providerID, provider: provider, apiKey: apiKey, managesWorkingState: managesWorkingState)
         case .cliProxy:
+            updateKey(providerID: providerID, keyID: keyID) { key in
+                key.lastCheckedAt = .now
+            }
+        case .openAICompatible:
             updateKey(providerID: providerID, keyID: keyID) { key in
                 key.lastCheckedAt = .now
             }
@@ -496,7 +539,7 @@ final class ModelsBarState: ObservableObject {
             }
         }
 
-        if provider.type == .cliProxy {
+        if provider.type == .cliProxy || provider.type == .openAICompatible {
             setStatus("正在刷新 \(apiKey.name) 的模型", providerID: providerID)
             await refreshModels(providerID: providerID, keyID: keyID, managesWorkingState: false)
             setStatus("\(apiKey.name) 的模型已刷新", providerID: providerID)
@@ -772,11 +815,36 @@ final class ModelsBarState: ObservableObject {
     }
 
     private var syncSupportedProviderTypes: Set<ProviderType> {
-        [.newapi, .sub2api, .cliProxy]
+        [.newapi, .sub2api, .cliProxy, .openAICompatible]
     }
 
     private var openAIGatewaySupportedProviderTypes: Set<ProviderType> {
-        [.newapi, .sub2api, .cliProxy]
+        [.newapi, .sub2api, .cliProxy, .openAICompatible]
+    }
+
+    private func syncOpenAICompatibleKeys(providerID: UUID, provider: ProviderConfig, managesWorkingState: Bool) async {
+        let enabledKeys = provider.keys.filter(\.isEnabled)
+        guard enabledKeys.isEmpty == false else {
+            setStatus("请先手动添加 API Key", providerID: providerID)
+            return
+        }
+
+        if managesWorkingState {
+            isWorking = true
+            beginProviderWork(providerID)
+        }
+        defer {
+            if managesWorkingState {
+                isWorking = false
+                endProviderWork(providerID)
+            }
+        }
+
+        setStatus("正在刷新 \(provider.name) 的模型", providerID: providerID)
+        for apiKey in enabledKeys {
+            await refreshKeyInfo(providerID: providerID, keyID: apiKey.id, managesWorkingState: false)
+        }
+        setStatus("已刷新 \(enabledKeys.count) 个 API Key", providerID: providerID)
     }
 
     private func setStatus(_ message: String, providerID: UUID? = nil) {

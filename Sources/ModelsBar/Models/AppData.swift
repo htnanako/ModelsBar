@@ -12,6 +12,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
     case newapi
     case sub2api
     case cliProxy
+    case openAICompatible
 
     var id: String { rawValue }
 
@@ -23,6 +24,8 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
             return "Sub2API"
         case .cliProxy:
             return "CLI Proxy API"
+        case .openAICompatible:
+            return "OpenAI Compatible"
         }
     }
 
@@ -31,6 +34,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
         case .newapi: "NewAPI"
         case .sub2api: "Sub2API"
         case .cliProxy: "CLI Proxy API"
+        case .openAICompatible: "OpenAI Compatible"
         }
     }
 
@@ -42,6 +46,8 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
             self = .sub2api
         case ProviderType.cliProxy.rawValue, "cli-proxy", "cpa":
             self = .cliProxy
+        case ProviderType.openAICompatible.rawValue, "openai-compatible", "openai", "direct":
+            self = .openAICompatible
         case ProviderType.newapi.rawValue:
             self = .newapi
         default:
@@ -544,6 +550,8 @@ extension ProviderConfig {
             return sub2APIUser?.availableDescription ?? "--"
         case .cliProxy:
             return "--"
+        case .openAICompatible:
+            return "--"
         }
     }
 
@@ -563,6 +571,8 @@ extension ProviderConfig {
             }
             return values.reduce(0, +).usdDescription
         case .cliProxy:
+            return "--"
+        case .openAICompatible:
             return "--"
         }
     }
@@ -673,6 +683,9 @@ extension APIKeyConfig {
         case .cliProxy:
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
+        case .openAICompatible:
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
     }
 
@@ -686,6 +699,8 @@ extension APIKeyConfig {
         case .sub2api:
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         case .cliProxy:
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .openAICompatible:
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
@@ -742,6 +757,8 @@ extension APIKeyConfig {
             return "--"
         case .cliProxy:
             return "--"
+        case .openAICompatible:
+            return "--"
         }
     }
 
@@ -752,6 +769,8 @@ extension APIKeyConfig {
         case .sub2api:
             return todayUsedAmountUSD?.usdDescription ?? sub2APIUsage?.todayDescription ?? "--"
         case .cliProxy:
+            return "--"
+        case .openAICompatible:
             return "--"
         }
     }
@@ -796,6 +815,8 @@ extension APIKeyConfig {
             return "--"
         case .cliProxy:
             return "--"
+        case .openAICompatible:
+            return "--"
         }
     }
 
@@ -839,6 +860,8 @@ extension APIKeyConfig {
 
             return 0
         case .cliProxy:
+            return 0
+        case .openAICompatible:
             return 0
         }
     }
