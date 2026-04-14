@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/htnanako/ModelsBar/compare/v1.0.0...v1.1.0) (2026-04-14)
+
+
+### Features
+
+* 🎸 Add CLi Proxy Management site support ([df2df17](https://github.com/htnanako/ModelsBar/commit/df2df17107283929d0003ef7af3bbda75ec52c53))
+* 🎸 Add OpenAI Compatible interface support ([88cc5fe](https://github.com/htnanako/ModelsBar/commit/88cc5fe1b6330fe7e9e25a0cc8eb7f13c64dbb7d))
+
+
+### Bug Fixes
+
+* 🐛 Optimize configuration file logic and split functionalit ([f5f70d6](https://github.com/htnanako/ModelsBar/commit/f5f70d67ba55e1a17417ba082d3914fafc927c06))
+
 ## 1.0.0 (2026-04-13)
 
 
