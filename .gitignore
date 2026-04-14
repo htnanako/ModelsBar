@@ -5,6 +5,7 @@
 .build/
 .swiftpm/
 Package.resolved
+.codex/
 
 # Xcode
 DerivedData/

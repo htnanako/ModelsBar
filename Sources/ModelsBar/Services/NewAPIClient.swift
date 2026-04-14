@@ -88,8 +88,12 @@ struct NewAPIClient {
         return try parseLogStatQuota(from: data)
     }
 
-    func testModelConnectivity(modelID: String, mode: TestMode) async throws -> OpenAIModelTestOutcome {
-        let modelInterface = OpenAIModelInterface(modelID: modelID)
+    func testModelConnectivity(
+        modelID: String,
+        mode: TestMode,
+        interface: OpenAIModelInterface? = nil
+    ) async throws -> OpenAIModelTestOutcome {
+        let modelInterface = interface ?? OpenAIModelInterface.recommended(for: modelID)
         let startedAt = ContinuousClock.now
 
         switch modelInterface {
@@ -99,6 +103,13 @@ struct NewAPIClient {
                 try await testNonStream(modelID: modelID)
             case .stream:
                 try await testStream(modelID: modelID)
+            }
+        case .responses:
+            switch mode {
+            case .nonStream:
+                try await testResponses(modelID: modelID, stream: false)
+            case .stream:
+                try await testResponses(modelID: modelID, stream: true)
             }
         case .embeddings:
             guard mode != .stream else {
@@ -181,6 +192,52 @@ struct NewAPIClient {
         let decoded = try JSONDecoder().decode(EmbeddingsResponse.self, from: data)
         guard decoded.data.contains(where: { $0.embedding.isEmpty == false }) else {
             throw NewAPIClientError.api("响应中没有 embedding")
+        }
+    }
+
+    private func testResponses(modelID: String, stream: Bool) async throws {
+        var request = try authorizedRequest(url: openAIEndpoint(path: "responses"), method: "POST")
+        request.timeoutInterval = timeout
+        request.httpBody = try JSONEncoder().encode(ResponsesRequest(
+            model: modelID,
+            input: "Reply with OK only.",
+            stream: stream,
+            maxOutputTokens: 8
+        ))
+
+        if stream {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            try validate(response: response, data: nil)
+
+            var sawData = false
+            for try await line in bytes.lines {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("data:") else {
+                    continue
+                }
+
+                let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if payload == "[DONE]" {
+                    break
+                }
+
+                if payload.isEmpty == false {
+                    sawData = true
+                    break
+                }
+            }
+
+            guard sawData else {
+                throw NewAPIClientError.api("Responses 流式响应没有收到 data 事件")
+            }
+            return
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        let decoded = try JSONDecoder().decode(ResponsesResponse.self, from: data)
+        guard decoded.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            throw NewAPIClientError.api("Responses 响应中没有 id")
         }
     }
 
@@ -667,27 +724,73 @@ struct OpenAIModelTestOutcome: Equatable {
         switch interface {
         case .chatCompletions:
             "Chat Completions OK"
+        case .responses:
+            "Responses OK"
         case .embeddings:
             "Embeddings OK"
         }
     }
 }
 
-enum OpenAIModelInterface: Equatable {
+enum OpenAIModelInterface: String, Codable, CaseIterable, Equatable, Hashable {
     case chatCompletions
+    case responses
     case embeddings
+
+    var title: String {
+        switch self {
+        case .chatCompletions:
+            return "/v1/chat/completions"
+        case .responses:
+            return "/v1/responses"
+        case .embeddings:
+            return "/v1/embeddings"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .chatCompletions:
+            return "Chat"
+        case .responses:
+            return "Responses"
+        case .embeddings:
+            return "Embeddings"
+        }
+    }
 
     var supportsStreamTesting: Bool {
         switch self {
         case .chatCompletions:
+            true
+        case .responses:
             true
         case .embeddings:
             false
         }
     }
 
+    static func availableInterfaces(for modelID: String) -> [OpenAIModelInterface] {
+        let lowercased = modelID.lowercased()
+        if lowercased.contains("embedding") {
+            return [.embeddings]
+        }
+        return [.chatCompletions, .responses]
+    }
+
+    static func recommended(for modelID: String) -> OpenAIModelInterface {
+        let lowercased = modelID.lowercased()
+        if lowercased.contains("embedding") {
+            return .embeddings
+        }
+        if lowercased.contains("codex") {
+            return .responses
+        }
+        return .chatCompletions
+    }
+
     init(modelID: String) {
-        self = modelID.localizedCaseInsensitiveContains("embedding") ? .embeddings : .chatCompletions
+        self = Self.recommended(for: modelID)
     }
 }
 
@@ -791,4 +894,22 @@ private struct EmbeddingsResponse: Decodable {
 
 private struct EmbeddingData: Decodable {
     var embedding: [Double]
+}
+
+private struct ResponsesRequest: Encodable {
+    var model: String
+    var input: String
+    var stream: Bool
+    var maxOutputTokens: Int
+
+    enum CodingKeys: String, CodingKey {
+        case model
+        case input
+        case stream
+        case maxOutputTokens = "max_output_tokens"
+    }
+}
+
+private struct ResponsesResponse: Decodable {
+    var id: String
 }

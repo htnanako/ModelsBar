@@ -11,15 +11,26 @@ struct AppData: Codable, Equatable {
 enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
     case newapi
     case sub2api
+    case cliProxy
 
     var id: String { rawValue }
 
-    var title: String { rawValue }
+    var title: String {
+        switch self {
+        case .newapi:
+            return "NewAPI"
+        case .sub2api:
+            return "Sub2API"
+        case .cliProxy:
+            return "CLI Proxy API"
+        }
+    }
 
     var defaultProviderName: String {
         switch self {
         case .newapi: "NewAPI"
         case .sub2api: "Sub2API"
+        case .cliProxy: "CLI Proxy API"
         }
     }
 
@@ -29,6 +40,8 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
         switch rawValue {
         case ProviderType.sub2api.rawValue, "subapi":
             self = .sub2api
+        case ProviderType.cliProxy.rawValue, "cli-proxy", "cpa":
+            self = .cliProxy
         case ProviderType.newapi.rawValue:
             self = .newapi
         default:
@@ -411,10 +424,63 @@ struct ModelTestResult: Identifiable, Codable, Equatable, Hashable {
     var keyID: UUID
     var modelID: String
     var mode: TestMode
+    var interface: OpenAIModelInterface
     var succeeded: Bool
     var latencyMS: Int
     var message: String
     var testedAt: Date = .now
+
+    init(
+        id: UUID = UUID(),
+        providerID: UUID,
+        keyID: UUID,
+        modelID: String,
+        mode: TestMode,
+        interface: OpenAIModelInterface,
+        succeeded: Bool,
+        latencyMS: Int,
+        message: String,
+        testedAt: Date = .now
+    ) {
+        self.id = id
+        self.providerID = providerID
+        self.keyID = keyID
+        self.modelID = modelID
+        self.mode = mode
+        self.interface = interface
+        self.succeeded = succeeded
+        self.latencyMS = latencyMS
+        self.message = message
+        self.testedAt = testedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case providerID
+        case keyID
+        case modelID
+        case mode
+        case interface
+        case succeeded
+        case latencyMS
+        case message
+        case testedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        providerID = try container.decode(UUID.self, forKey: .providerID)
+        keyID = try container.decode(UUID.self, forKey: .keyID)
+        modelID = try container.decode(String.self, forKey: .modelID)
+        mode = try container.decode(TestMode.self, forKey: .mode)
+        interface = try container.decodeIfPresent(OpenAIModelInterface.self, forKey: .interface)
+            ?? OpenAIModelInterface.recommended(for: modelID)
+        succeeded = try container.decode(Bool.self, forKey: .succeeded)
+        latencyMS = try container.decode(Int.self, forKey: .latencyMS)
+        message = try container.decode(String.self, forKey: .message)
+        testedAt = try container.decodeIfPresent(Date.self, forKey: .testedAt) ?? .now
+    }
 }
 
 enum TestMode: String, Codable, CaseIterable, Hashable {
@@ -476,6 +542,8 @@ extension ProviderConfig {
             return accountQuota?.availableDescription ?? "--"
         case .sub2api:
             return sub2APIUser?.availableDescription ?? "--"
+        case .cliProxy:
+            return "--"
         }
     }
 
@@ -494,6 +562,8 @@ extension ProviderConfig {
                 return "--"
             }
             return values.reduce(0, +).usdDescription
+        case .cliProxy:
+            return "--"
         }
     }
 }
@@ -600,6 +670,9 @@ extension APIKeyConfig {
         case .sub2api:
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
+        case .cliProxy:
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
     }
 
@@ -611,6 +684,8 @@ extension APIKeyConfig {
             }
             return maskedRemoteDisplayValue
         case .sub2api:
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .cliProxy:
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
@@ -665,6 +740,8 @@ extension APIKeyConfig {
             }
 
             return "--"
+        case .cliProxy:
+            return "--"
         }
     }
 
@@ -674,6 +751,8 @@ extension APIKeyConfig {
             return todayUsedQuota.map(\.newAPIQuotaDollarDescription) ?? "--"
         case .sub2api:
             return todayUsedAmountUSD?.usdDescription ?? sub2APIUsage?.todayDescription ?? "--"
+        case .cliProxy:
+            return "--"
         }
     }
 
@@ -714,6 +793,8 @@ extension APIKeyConfig {
                 return "\(remaining.usdDescription) 可用"
             }
 
+            return "--"
+        case .cliProxy:
             return "--"
         }
     }
@@ -756,6 +837,8 @@ extension APIKeyConfig {
                 return 1
             }
 
+            return 0
+        case .cliProxy:
             return 0
         }
     }

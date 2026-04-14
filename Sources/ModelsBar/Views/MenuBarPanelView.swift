@@ -290,7 +290,7 @@ struct MenuBarPanelView: View {
 
             if provider.keys.isEmpty {
                 CompactMenuPanel {
-                    Text(provider.type == .newapi ? "这个站点下还没有 Key。" : (provider.sub2APIAuthorized ? "点击同步后会拉取账号下的全部 Key。" : "先到设置里导入 Sub2API 登录态。"))
+                    Text(emptyKeyMessage(provider))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -314,6 +314,17 @@ struct MenuBarPanelView: View {
         let listHeight = CGFloat(provider.keys.count) * keyCardHeight
             + CGFloat(max(provider.keys.count - 1, 0)) * keyCardSpacing
         return listHeight > maxKeyListHeight
+    }
+
+    private func emptyKeyMessage(_ provider: ProviderConfig) -> String {
+        switch provider.type {
+        case .newapi:
+            return "这个站点下还没有 Key。"
+        case .cliProxy:
+            return "点击同步后会拉取 CLI Proxy API 管理端里的全部 API Keys。"
+        case .sub2api:
+            return provider.sub2APIAuthorized ? "点击同步后会拉取账号下的全部 Key。" : "先到设置里导入 Sub2API 登录态。"
+        }
     }
 
     private func keyCards(_ provider: ProviderConfig) -> some View {
@@ -513,8 +524,8 @@ private struct KeyOverviewCard: View {
     }
 
     private var todayUsageDescription: String {
-        if provider.type == .sub2api {
-            return apiKey.todayUsageDescription(for: .sub2api)
+        if provider.type != .newapi {
+            return apiKey.todayUsageDescription(for: provider.type)
         }
 
         if let todayUsedQuota = apiKey.todayUsedQuota {
@@ -751,16 +762,33 @@ private struct ModelsStatusMenu: View {
     private var modelRows: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(records) { record in
-                modelRow(record)
+                MenuBarModelStatusRow(provider: provider, apiKey: apiKey, record: record)
             }
         }
     }
+}
 
-    private func modelRow(_ record: ModelRecord) -> some View {
+private struct MenuBarModelStatusRow: View {
+    @EnvironmentObject private var state: ModelsBarState
+    @State private var selectedInterface: OpenAIModelInterface
+    private let interfacePickerWidth: CGFloat = 112
+
+    let provider: ProviderConfig
+    let apiKey: APIKeyConfig
+    let record: ModelRecord
+
+    init(provider: ProviderConfig, apiKey: APIKeyConfig, record: ModelRecord) {
+        self.provider = provider
+        self.apiKey = apiKey
+        self.record = record
+        _selectedInterface = State(initialValue: OpenAIModelInterface.recommended(for: record.modelID))
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Image(systemName: modelSymbol(record))
-                    .foregroundStyle(modelTint(record))
+                Image(systemName: modelSymbol)
+                    .foregroundStyle(modelTint)
                     .frame(width: 16)
 
                 Text(record.modelID)
@@ -769,44 +797,188 @@ private struct ModelsStatusMenu: View {
                     .minimumScaleFactor(0.75)
 
                 Spacer(minLength: 0)
+
+                if availableInterfaces.count > 1 {
+                    interfaceMenu
+                }
             }
 
             HStack(spacing: 6) {
-                statusPill(record.nonStreamResult, prefix: "非流式")
-                if supportsStreamTesting(record) {
-                    statusPill(record.streamResult, prefix: "流式")
+                statusPill(currentResult(for: .nonStream), prefix: "非流式")
+                if supportsStreamTesting {
+                    statusPill(currentResult(for: .stream), prefix: "流式")
                 } else {
                     unsupportedStatusPill(prefix: "流式")
                 }
 
                 Spacer()
 
-                Button(buttonTitle(record, mode: .nonStream)) {
+                Button(buttonTitle(mode: .nonStream)) {
                     state.enqueueModelTest(
                         providerID: provider.id,
                         keyID: apiKey.id,
                         modelID: record.modelID,
-                        mode: .nonStream
+                        mode: .nonStream,
+                        interface: selectedInterface
                     )
                 }
                 .lineLimit(1)
-                .disabled(buttonDisabled(record, mode: .nonStream))
+                .disabled(buttonDisabled(mode: .nonStream))
 
-                Button(buttonTitle(record, mode: .stream)) {
+                Button(buttonTitle(mode: .stream)) {
                     state.enqueueModelTest(
                         providerID: provider.id,
                         keyID: apiKey.id,
                         modelID: record.modelID,
-                        mode: .stream
+                        mode: .stream,
+                        interface: selectedInterface
                     )
                 }
                 .lineLimit(1)
-                .disabled(buttonDisabled(record, mode: .stream))
-                .help(supportsStreamTesting(record) ? "测试流式响应" : "Embedding 接口不支持流式测试")
+                .disabled(buttonDisabled(mode: .stream))
+                .help(supportsStreamTesting ? "测试流式响应" : "\(selectedInterface.shortTitle) 不支持流式测试")
             }
+
+            Text(selectedInterface.title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .padding(8)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var availableInterfaces: [OpenAIModelInterface] {
+        OpenAIModelInterface.availableInterfaces(for: record.modelID)
+    }
+
+    private var interfaceMenu: some View {
+        Menu {
+            ForEach(availableInterfaces, id: \.self) { interface in
+                Button {
+                    selectedInterface = interface
+                } label: {
+                    if interface == selectedInterface {
+                        Label(interface.shortTitle, systemImage: "checkmark")
+                    } else {
+                        Text(interface.shortTitle)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectedInterface.shortTitle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(width: interfacePickerWidth, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private var supportsStreamTesting: Bool {
+        selectedInterface.supportsStreamTesting
+    }
+
+    private func currentResult(for mode: TestMode) -> ModelTestResult? {
+        state.latestModelTestResult(
+            providerID: provider.id,
+            keyID: apiKey.id,
+            modelID: record.modelID,
+            mode: mode,
+            interface: selectedInterface
+        )
+    }
+
+    private var aggregateState: ModelAggregateVisualState {
+        if supportsStreamTesting == false {
+            guard let result = currentResult(for: .nonStream) else {
+                return .idle
+            }
+            return result.succeeded ? .success : .failure
+        }
+
+        guard let nonStreamResult = currentResult(for: .nonStream),
+              let streamResult = currentResult(for: .stream) else {
+            return .idle
+        }
+
+        if nonStreamResult.succeeded && streamResult.succeeded {
+            return .success
+        }
+
+        if nonStreamResult.succeeded != streamResult.succeeded {
+            return .mixed
+        }
+
+        return .failure
+    }
+
+    private var modelSymbol: String {
+        switch aggregateState {
+        case .success:
+            return "checkmark.circle.fill"
+        case .mixed:
+            return "exclamationmark.circle.fill"
+        case .failure:
+            return "xmark.circle.fill"
+        case .idle:
+            return "minus.circle"
+        }
+    }
+
+    private var modelTint: Color {
+        switch aggregateState {
+        case .success:
+            return .green
+        case .mixed:
+            return .yellow
+        case .failure:
+            return .red
+        case .idle:
+            return .secondary
+        }
+    }
+
+    private func executionState(mode: TestMode) -> ModelTestExecutionState {
+        state.modelTestExecutionState(
+            providerID: provider.id,
+            keyID: apiKey.id,
+            modelID: record.modelID,
+            mode: mode,
+            interface: selectedInterface
+        )
+    }
+
+    private func buttonTitle(mode: TestMode) -> String {
+        switch executionState(mode: mode) {
+        case .idle:
+            return mode == .nonStream ? "非流式" : "流式"
+        case .queued:
+            return "排队中"
+        case .running:
+            return "测试中"
+        }
+    }
+
+    private func buttonDisabled(mode: TestMode) -> Bool {
+        if mode == .stream && supportsStreamTesting == false {
+            return true
+        }
+
+        switch executionState(mode: mode) {
+        case .idle:
+            return false
+        case .queued, .running:
+            return true
+        }
     }
 
     private func statusPill(_ result: ModelTestResult?, prefix: String) -> some View {
@@ -827,103 +999,6 @@ private struct ModelsStatusMenu: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(Color.secondary.opacity(0.12), in: Capsule())
-    }
-
-    private func modelSymbol(_ record: ModelRecord) -> String {
-        switch aggregateState(record) {
-        case .success:
-            return "checkmark.circle.fill"
-        case .mixed:
-            return "exclamationmark.circle.fill"
-        case .failure:
-            return "xmark.circle.fill"
-        case .idle:
-            return "minus.circle"
-        }
-    }
-
-    private func modelTint(_ record: ModelRecord) -> Color {
-        switch aggregateState(record) {
-        case .success:
-            return .green
-        case .mixed:
-            return .yellow
-        case .failure:
-            return .red
-        case .idle:
-            return .secondary
-        }
-    }
-
-    private func supportsStreamTesting(_ record: ModelRecord) -> Bool {
-        OpenAIModelInterface(modelID: record.modelID).supportsStreamTesting
-    }
-
-    private func statusResults(_ record: ModelRecord) -> [ModelTestResult] {
-        supportsStreamTesting(record)
-            ? [record.nonStreamResult, record.streamResult].compactMap(\.self)
-            : [record.nonStreamResult].compactMap(\.self)
-    }
-
-    private func expectedStatusResultCount(_ record: ModelRecord) -> Int {
-        supportsStreamTesting(record) ? 2 : 1
-    }
-
-    private func aggregateState(_ record: ModelRecord) -> ModelAggregateVisualState {
-        if supportsStreamTesting(record) == false {
-            guard let result = record.nonStreamResult else {
-                return .idle
-            }
-            return result.succeeded ? .success : .failure
-        }
-
-        guard let nonStreamResult = record.nonStreamResult,
-              let streamResult = record.streamResult else {
-            return .idle
-        }
-
-        if nonStreamResult.succeeded && streamResult.succeeded {
-            return .success
-        }
-
-        if nonStreamResult.succeeded != streamResult.succeeded {
-            return .mixed
-        }
-
-        return .failure
-    }
-
-    private func executionState(_ record: ModelRecord, mode: TestMode) -> ModelTestExecutionState {
-        state.modelTestExecutionState(
-            providerID: provider.id,
-            keyID: apiKey.id,
-            modelID: record.modelID,
-            mode: mode
-        )
-    }
-
-    private func buttonTitle(_ record: ModelRecord, mode: TestMode) -> String {
-        switch executionState(record, mode: mode) {
-        case .idle:
-            return mode == .nonStream ? "非流式" : "流式"
-        case .queued:
-            return "排队中"
-        case .running:
-            return "测试中"
-        }
-    }
-
-    private func buttonDisabled(_ record: ModelRecord, mode: TestMode) -> Bool {
-        if mode == .stream && supportsStreamTesting(record) == false {
-            return true
-        }
-
-        switch executionState(record, mode: mode) {
-        case .idle:
-            return false
-        case .queued, .running:
-            return true
-        }
     }
 
     private func statusSymbol(_ result: ModelTestResult?) -> String {

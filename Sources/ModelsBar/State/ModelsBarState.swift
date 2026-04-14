@@ -5,6 +5,7 @@ struct ModelTestRequest: Equatable, Hashable {
     var keyID: UUID
     var modelID: String
     var mode: TestMode
+    var interface: OpenAIModelInterface
 }
 
 enum ModelTestExecutionState: Equatable {
@@ -83,8 +84,21 @@ final class ModelsBarState: ObservableObject {
         workingProviderIDs.contains(providerID)
     }
 
-    func modelTestExecutionState(providerID: UUID, keyID: UUID, modelID: String, mode: TestMode) -> ModelTestExecutionState {
-        let request = ModelTestRequest(providerID: providerID, keyID: keyID, modelID: modelID, mode: mode)
+    func modelTestExecutionState(
+        providerID: UUID,
+        keyID: UUID,
+        modelID: String,
+        mode: TestMode,
+        interface: OpenAIModelInterface? = nil
+    ) -> ModelTestExecutionState {
+        let resolvedInterface = interface ?? OpenAIModelInterface.recommended(for: modelID)
+        let request = ModelTestRequest(
+            providerID: providerID,
+            keyID: keyID,
+            modelID: modelID,
+            mode: mode,
+            interface: resolvedInterface
+        )
         if activeModelTestRequest == request {
             return .running
         }
@@ -94,6 +108,22 @@ final class ModelsBarState: ObservableObject {
         }
 
         return .idle
+    }
+
+    func latestModelTestResult(
+        providerID: UUID,
+        keyID: UUID,
+        modelID: String,
+        mode: TestMode,
+        interface: OpenAIModelInterface
+    ) -> ModelTestResult? {
+        data.testResults.first {
+            $0.providerID == providerID &&
+            $0.keyID == keyID &&
+            $0.modelID == modelID &&
+            $0.mode == mode &&
+            $0.interface == interface
+        }
     }
 
     func key(providerID: UUID, keyID: UUID) -> APIKeyConfig? {
@@ -147,7 +177,7 @@ final class ModelsBarState: ObservableObject {
             type: type,
             name: trimmedName.isEmpty ? type.defaultProviderName : trimmedName,
             baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            managementToken: type == .newapi && trimmedManagementToken.isEmpty == false ? trimmedManagementToken : nil,
+            managementToken: [.newapi, .cliProxy].contains(type) && trimmedManagementToken.isEmpty == false ? trimmedManagementToken : nil,
             managementUserID: type == .newapi && trimmedUserID.isEmpty == false ? trimmedUserID : nil
         )
         data.providers.append(provider)
@@ -347,7 +377,9 @@ final class ModelsBarState: ObservableObject {
         setStatus("正在刷新 \(apiKey.name) 的模型", providerID: providerID)
 
         do {
-            let requestValue = apiKey.requestValue(for: provider.type) ?? apiKey.value
+            guard let requestValue = apiKey.requestValue(for: provider.type) else {
+                throw NewAPIClientError.invalidAPIKey
+            }
             let client = NewAPIClient(baseURLString: provider.baseURL, apiKey: requestValue)
             let models = try await client.fetchModels()
             upsertModels(providerID: providerID, keyID: keyID, modelIDs: models)
@@ -378,6 +410,8 @@ final class ModelsBarState: ObservableObject {
             await syncNewAPIManagedTokens(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         case .sub2api:
             await syncSub2APIManagedTokens(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
+        case .cliProxy:
+            await syncCLIProxyManagedTokens(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         }
     }
 
@@ -413,6 +447,8 @@ final class ModelsBarState: ObservableObject {
             await refreshNewAPIAccountQuota(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         case .sub2api:
             await refreshSub2APIAccountQuota(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
+        case .cliProxy:
+            setStatus("CLI Proxy API 暂不提供账号额度信息", providerID: providerID)
         }
     }
 
@@ -426,6 +462,10 @@ final class ModelsBarState: ObservableObject {
             await refreshNewAPIQuota(providerID: providerID, provider: provider, apiKey: apiKey, managesWorkingState: managesWorkingState)
         case .sub2api:
             await refreshSub2APIQuota(providerID: providerID, provider: provider, apiKey: apiKey, managesWorkingState: managesWorkingState)
+        case .cliProxy:
+            updateKey(providerID: providerID, keyID: keyID) { key in
+                key.lastCheckedAt = .now
+            }
         }
     }
 
@@ -454,6 +494,13 @@ final class ModelsBarState: ObservableObject {
                 isWorking = false
                 endProviderWork(providerID)
             }
+        }
+
+        if provider.type == .cliProxy {
+            setStatus("正在刷新 \(apiKey.name) 的模型", providerID: providerID)
+            await refreshModels(providerID: providerID, keyID: keyID, managesWorkingState: false)
+            setStatus("\(apiKey.name) 的模型已刷新", providerID: providerID)
+            return
         }
 
         setStatus("正在刷新 \(apiKey.name) 的额度和模型", providerID: providerID)
@@ -524,7 +571,14 @@ final class ModelsBarState: ObservableObject {
         )
     }
 
-    func testModel(providerID: UUID, keyID: UUID, modelID: String, mode: TestMode, managesWorkingState: Bool = true) async {
+    func testModel(
+        providerID: UUID,
+        keyID: UUID,
+        modelID: String,
+        mode: TestMode,
+        interface: OpenAIModelInterface? = nil,
+        managesWorkingState: Bool = true
+    ) async {
         guard let provider = provider(id: providerID), let apiKey = key(providerID: providerID, keyID: keyID) else {
             return
         }
@@ -539,7 +593,7 @@ final class ModelsBarState: ObservableObject {
             return
         }
 
-        let modelInterface = OpenAIModelInterface(modelID: modelID)
+        let modelInterface = interface ?? OpenAIModelInterface.recommended(for: modelID)
         if mode == .stream && modelInterface.supportsStreamTesting == false {
             setStatus("\(modelID) 不支持流式测试", providerID: providerID)
             return
@@ -558,14 +612,21 @@ final class ModelsBarState: ObservableObject {
         setStatus("正在测试 \(modelID)（\(mode.title)）", providerID: providerID)
 
         do {
-            let requestValue = apiKey.requestValue(for: provider.type) ?? apiKey.value
+            guard let requestValue = apiKey.requestValue(for: provider.type) else {
+                throw NewAPIClientError.invalidAPIKey
+            }
             let client = NewAPIClient(baseURLString: provider.baseURL, apiKey: requestValue)
-            let outcome = try await client.testModelConnectivity(modelID: modelID, mode: mode)
+            let outcome = try await client.testModelConnectivity(
+                modelID: modelID,
+                mode: mode,
+                interface: modelInterface
+            )
             let result = ModelTestResult(
                 providerID: providerID,
                 keyID: keyID,
                 modelID: modelID,
                 mode: mode,
+                interface: modelInterface,
                 succeeded: true,
                 latencyMS: outcome.latencyMS,
                 message: outcome.message
@@ -578,6 +639,7 @@ final class ModelsBarState: ObservableObject {
                 keyID: keyID,
                 modelID: modelID,
                 mode: mode,
+                interface: modelInterface,
                 succeeded: false,
                 latencyMS: 0,
                 message: error.localizedDescription
@@ -588,8 +650,21 @@ final class ModelsBarState: ObservableObject {
 
     }
 
-    func enqueueModelTest(providerID: UUID, keyID: UUID, modelID: String, mode: TestMode) {
-        let request = ModelTestRequest(providerID: providerID, keyID: keyID, modelID: modelID, mode: mode)
+    func enqueueModelTest(
+        providerID: UUID,
+        keyID: UUID,
+        modelID: String,
+        mode: TestMode,
+        interface: OpenAIModelInterface? = nil
+    ) {
+        let resolvedInterface = interface ?? OpenAIModelInterface.recommended(for: modelID)
+        let request = ModelTestRequest(
+            providerID: providerID,
+            keyID: keyID,
+            modelID: modelID,
+            mode: mode,
+            interface: resolvedInterface
+        )
         guard activeModelTestRequest != request,
               queuedModelTestRequests.contains(request) == false else {
             return
@@ -613,15 +688,17 @@ final class ModelsBarState: ObservableObject {
                     keyID: record.keyID,
                     modelID: record.modelID,
                     mode: .nonStream,
+                    interface: OpenAIModelInterface.recommended(for: record.modelID),
                     managesWorkingState: false
                 )
 
-                if OpenAIModelInterface(modelID: record.modelID).supportsStreamTesting {
+                if OpenAIModelInterface.recommended(for: record.modelID).supportsStreamTesting {
                     await testModel(
                         providerID: record.providerID,
                         keyID: record.keyID,
                         modelID: record.modelID,
                         mode: .stream,
+                        interface: OpenAIModelInterface.recommended(for: record.modelID),
                         managesWorkingState: false
                     )
                 }
@@ -643,15 +720,17 @@ final class ModelsBarState: ObservableObject {
                     keyID: record.keyID,
                     modelID: record.modelID,
                     mode: .nonStream,
+                    interface: OpenAIModelInterface.recommended(for: record.modelID),
                     managesWorkingState: false
                 )
 
-                if OpenAIModelInterface(modelID: record.modelID).supportsStreamTesting {
+                if OpenAIModelInterface.recommended(for: record.modelID).supportsStreamTesting {
                     await testModel(
                         providerID: record.providerID,
                         keyID: record.keyID,
                         modelID: record.modelID,
                         mode: .stream,
+                        interface: OpenAIModelInterface.recommended(for: record.modelID),
                         managesWorkingState: false
                     )
                 }
@@ -693,11 +772,11 @@ final class ModelsBarState: ObservableObject {
     }
 
     private var syncSupportedProviderTypes: Set<ProviderType> {
-        [.newapi, .sub2api]
+        [.newapi, .sub2api, .cliProxy]
     }
 
     private var openAIGatewaySupportedProviderTypes: Set<ProviderType> {
-        [.newapi, .sub2api]
+        [.newapi, .sub2api, .cliProxy]
     }
 
     private func setStatus(_ message: String, providerID: UUID? = nil) {
@@ -740,6 +819,7 @@ final class ModelsBarState: ObservableObject {
                 keyID: request.keyID,
                 modelID: request.modelID,
                 mode: request.mode,
+                interface: request.interface,
                 managesWorkingState: false
             )
             endProviderWork(request.providerID)
@@ -842,6 +922,51 @@ final class ModelsBarState: ObservableObject {
             setStatus("同步 Key 失败：\(error.localizedDescription)", providerID: providerID)
         }
 
+    }
+
+    private func syncCLIProxyManagedTokens(providerID: UUID, provider: ProviderConfig, managesWorkingState: Bool) async {
+        guard provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            setStatus("请先配置 BaseURL", providerID: providerID)
+            return
+        }
+
+        guard let managementToken = provider.managementToken,
+              managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            setStatus("请先配置管理密钥", providerID: providerID)
+            return
+        }
+
+        if managesWorkingState {
+            isWorking = true
+            beginProviderWork(providerID)
+        }
+        defer {
+            if managesWorkingState {
+                isWorking = false
+                endProviderWork(providerID)
+            }
+        }
+        setStatus("正在同步 \(provider.name) 的 API Keys", providerID: providerID)
+
+        do {
+            let client = CLIProxyManagementClient(
+                baseURLString: provider.baseURL,
+                managementKey: managementToken
+            )
+            try await client.validateConnection()
+            let keys = try await client.fetchAPIKeys()
+            mergeCLIProxyKeys(keys, providerID: providerID)
+
+            if let refreshedProvider = self.provider(id: providerID) {
+                for key in refreshedProvider.keys where key.isEnabled {
+                    await refreshKeyInfo(providerID: providerID, keyID: key.id, managesWorkingState: false)
+                }
+            }
+
+            setStatus("已同步 \(keys.count) 个 API Key", providerID: providerID)
+        } catch {
+            setStatus("同步 API Keys 失败：\(error.localizedDescription)", providerID: providerID)
+        }
     }
 
     private func refreshNewAPIAccountQuota(providerID: UUID, provider: ProviderConfig, managesWorkingState: Bool) async {
@@ -1233,6 +1358,39 @@ final class ModelsBarState: ObservableObject {
 
         let localOnlyKeys = existingKeys.filter { consumedKeyIDs.contains($0.id) == false }
         data.providers[providerIndex].keys = syncedKeys + localOnlyKeys
+        data.providers[providerIndex].updatedAt = .now
+        persist()
+    }
+
+    private func mergeCLIProxyKeys(_ keys: [String], providerID: UUID) {
+        guard let providerIndex = data.providers.firstIndex(where: { $0.id == providerID }) else {
+            return
+        }
+
+        let existingKeys = data.providers[providerIndex].keys
+        var syncedKeys: [APIKeyConfig] = []
+
+        for (index, rawKey) in keys.enumerated() {
+            let keyValue = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard keyValue.isEmpty == false else {
+                continue
+            }
+
+            var apiKey = existingKeys.first { $0.value == keyValue } ?? APIKeyConfig(
+                name: "API Key \(index + 1)",
+                value: keyValue
+            )
+            apiKey.name = "API Key \(index + 1)"
+            apiKey.value = keyValue
+            apiKey.requiresManualCompletion = false
+            apiKey.remoteMaskedValue = nil
+            apiKey.updatedAt = .now
+
+            syncedKeys.append(apiKey)
+        }
+
+        data.providers[providerIndex].keys = syncedKeys
+        data.providers[providerIndex].requiresManualKeyCompletion = false
         data.providers[providerIndex].updatedAt = .now
         persist()
     }

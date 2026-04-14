@@ -418,7 +418,7 @@ private struct ProviderDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(provider.type == .newapi ? "API Keys" : "Sub2API Keys")
+                    Text(keyListTitle(provider))
                         .font(.headline.weight(.semibold))
 
                     Text(keyListSubtitle(provider))
@@ -471,6 +471,10 @@ private struct ProviderDetailView: View {
             return provider.keys.isEmpty
                 ? "同步系统访问令牌后会自动拉取可用 Key。"
                 : "\(provider.keys.count) 个 Key"
+        case .cliProxy:
+            return provider.keys.isEmpty
+                ? "同步管理密钥后会自动拉取 CLI Proxy API 下的全部 API Keys。"
+                : "\(provider.keys.count) 个 API Key"
         case .sub2api:
             if provider.sub2APIAuthorized == false {
                 return "导入 Sub2API 登录态后即可同步账号下的全部 Key。"
@@ -485,8 +489,21 @@ private struct ProviderDetailView: View {
         switch provider.type {
         case .newapi:
             return "配置系统访问令牌和用户ID后，同步即可拉取 Key。"
+        case .cliProxy:
+            return "配置 BaseURL 和管理密钥后，同步即可拉取 API Keys。"
         case .sub2api:
             return provider.sub2APIAuthorized ? "点击同步数据即可拉取 Key。" : "先导入 Sub2API 登录态，再同步账号下的全部 Key。"
+        }
+    }
+
+    private func keyListTitle(_ provider: ProviderConfig) -> String {
+        switch provider.type {
+        case .newapi:
+            return "API Keys"
+        case .cliProxy:
+            return "CLI Proxy API Keys"
+        case .sub2api:
+            return "Sub2API Keys"
         }
     }
 
@@ -693,11 +710,11 @@ private struct APIKeyRow: View {
     }
 
     private func canCopyAPIKey(_ apiKey: APIKeyConfig) -> Bool {
-        providerType == .sub2api || apiKey.requestValue(for: .newapi) != nil
+        providerType != .newapi || apiKey.requestValue(for: .newapi) != nil
     }
 
     private func canRefreshKey(_ apiKey: APIKeyConfig) -> Bool {
-        apiKey.isEnabled && (providerType == .sub2api || apiKey.requestValue(for: .newapi) != nil)
+        apiKey.isEnabled && (providerType != .newapi || apiKey.requestValue(for: .newapi) != nil)
     }
 
     private func beginManualKeyEditing(_ apiKey: APIKeyConfig) {
@@ -784,7 +801,7 @@ private struct ModelConnectivitySheet: View {
                     }
 
                     if provider.keys.isEmpty {
-                        EmptyHintView(title: "还没有可测试的 Key", message: provider.type == .newapi ? "先同步系统访问令牌，或手动添加一个 Key。" : "先完成授权并同步账号 Keys。", systemImage: "key.horizontal")
+                        EmptyHintView(title: "还没有可测试的 Key", message: connectivityEmptyMessage(provider), systemImage: "key.horizontal")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -865,6 +882,17 @@ private struct ModelConnectivitySheet: View {
 
         return min(max(headerHeight + tabsHeight + panelHeight, 420), 760)
     }
+
+    private func connectivityEmptyMessage(_ provider: ProviderConfig) -> String {
+        switch provider.type {
+        case .newapi:
+            return "先同步系统访问令牌，或手动添加一个 Key。"
+        case .cliProxy:
+            return "先同步 CLI Proxy API 管理端里的 API Keys。"
+        case .sub2api:
+            return "先完成授权并同步账号 Keys。"
+        }
+    }
 }
 
 private struct ConnectivityKeyPanel: View {
@@ -941,10 +969,19 @@ private struct ConnectivityKeyPanel: View {
 
 private struct ConnectivityModelRow: View {
     @EnvironmentObject private var state: ModelsBarState
+    @State private var selectedInterface: OpenAIModelInterface
+    private let interfacePickerWidth: CGFloat = 112
 
     let provider: ProviderConfig
     let apiKey: APIKeyConfig
     let record: ModelRecord
+
+    init(provider: ProviderConfig, apiKey: APIKeyConfig, record: ModelRecord) {
+        self.provider = provider
+        self.apiKey = apiKey
+        self.record = record
+        _selectedInterface = State(initialValue: OpenAIModelInterface.recommended(for: record.modelID))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -959,13 +996,25 @@ private struct ConnectivityModelRow: View {
                     .minimumScaleFactor(0.8)
 
                 Spacer(minLength: 0)
+
+                if availableInterfaces.count > 1 {
+                    Picker("接口", selection: $selectedInterface) {
+                        ForEach(availableInterfaces, id: \.self) { interface in
+                            Text(interface.shortTitle).tag(interface)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: interfacePickerWidth, alignment: .trailing)
+                    .help("选择测试接口")
+                }
             }
 
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
-                    statusPill(record.nonStreamResult, prefix: "非流式")
+                    statusPill(currentResult(for: .nonStream), prefix: "非流式")
                     if supportsStreamTesting {
-                        statusPill(record.streamResult, prefix: "流式")
+                        statusPill(currentResult(for: .stream), prefix: "流式")
                     } else {
                         unsupportedStatusPill(prefix: "流式")
                     }
@@ -982,7 +1031,8 @@ private struct ConnectivityModelRow: View {
                         providerID: provider.id,
                         keyID: apiKey.id,
                         modelID: record.modelID,
-                        mode: .nonStream
+                        mode: .nonStream,
+                        interface: selectedInterface
                     )
                 }
                 .disabled(buttonDisabled(for: .nonStream))
@@ -996,25 +1046,44 @@ private struct ConnectivityModelRow: View {
                         providerID: provider.id,
                         keyID: apiKey.id,
                         modelID: record.modelID,
-                        mode: .stream
+                        mode: .stream,
+                        interface: selectedInterface
                     )
                 }
                 .disabled(buttonDisabled(for: .stream))
-                .help(supportsStreamTesting ? "测试流式响应" : "Embedding 接口不支持流式测试")
+                .help(supportsStreamTesting ? "测试流式响应" : "\(selectedInterface.shortTitle) 不支持流式测试")
             }
+
+            Text("当前接口：\(selectedInterface.title)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(14)
         .background(SettingsSurface(cornerRadius: 18, highlight: .soft))
     }
 
+    private var availableInterfaces: [OpenAIModelInterface] {
+        OpenAIModelInterface.availableInterfaces(for: record.modelID)
+    }
+
     private var supportsStreamTesting: Bool {
-        OpenAIModelInterface(modelID: record.modelID).supportsStreamTesting
+        selectedInterface.supportsStreamTesting
+    }
+
+    private func currentResult(for mode: TestMode) -> ModelTestResult? {
+        state.latestModelTestResult(
+            providerID: provider.id,
+            keyID: apiKey.id,
+            modelID: record.modelID,
+            mode: mode,
+            interface: selectedInterface
+        )
     }
 
     private var statusResults: [ModelTestResult] {
         supportsStreamTesting
-            ? [record.nonStreamResult, record.streamResult].compactMap(\.self)
-            : [record.nonStreamResult].compactMap(\.self)
+            ? [currentResult(for: .nonStream), currentResult(for: .stream)].compactMap(\.self)
+            : [currentResult(for: .nonStream)].compactMap(\.self)
     }
 
     private var expectedStatusResultCount: Int {
@@ -1069,14 +1138,14 @@ private struct ConnectivityModelRow: View {
 
     private var aggregateState: ModelAggregateVisualState {
         if supportsStreamTesting == false {
-            guard let result = record.nonStreamResult else {
+            guard let result = currentResult(for: .nonStream) else {
                 return .idle
             }
             return result.succeeded ? .success : .failure
         }
 
-        guard let nonStreamResult = record.nonStreamResult,
-              let streamResult = record.streamResult else {
+        guard let nonStreamResult = currentResult(for: .nonStream),
+              let streamResult = currentResult(for: .stream) else {
             return .idle
         }
 
@@ -1096,7 +1165,8 @@ private struct ConnectivityModelRow: View {
             providerID: provider.id,
             keyID: apiKey.id,
             modelID: record.modelID,
-            mode: mode
+            mode: mode,
+            interface: selectedInterface
         )
     }
 
@@ -1958,6 +2028,19 @@ private func normalizedSub2APIField(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+private func normalizedBaseURLField(_ value: String, providerType: ProviderType? = nil) -> String {
+    let trimmed = normalizedSub2APIField(value)
+    guard let providerType else {
+        return trimmed
+    }
+
+    if providerType == .cliProxy {
+        return CLIProxyManagementClient.normalizedBaseURLString(trimmed)
+    }
+
+    return trimmed
+}
+
 private func formatSub2APITokenExpiresAtInput(_ date: Date) -> String {
     String(Int64((date.timeIntervalSince1970 * 1_000).rounded()))
 }
@@ -2053,7 +2136,7 @@ private struct EditProviderSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("编辑站点")
                         .font(.title3.weight(.semibold))
-                    Text(providerType == .newapi ? "更新站点信息后，可继续在主页同步账号额度、Key 额度和模型。" : "更新 BaseURL 或重新导入登录态后，可继续同步账号余额、Keys 和模型。")
+                    Text(editProviderSubtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -2075,18 +2158,20 @@ private struct EditProviderSheet: View {
                     )
                 }
 
-                if providerType == .newapi {
+                if providerType == .newapi || providerType == .cliProxy {
                     SettingsFieldBlock(title: "系统访问令牌") {
                         SettingsTextField(
                             text: $managementToken,
-                            placeholder: "个人设置 - 安全设置 - 系统访问令牌",
+                            placeholder: providerType == .cliProxy ? "Management Key" : "个人设置 - 安全设置 - 系统访问令牌",
                             monospaced: true,
                             enablesSelection: true
                         )
                     }
 
-                    SettingsFieldBlock(title: "用户ID") {
-                        SettingsTextField(text: $managementUserID, placeholder: "用户ID")
+                    if providerType == .newapi {
+                        SettingsFieldBlock(title: "用户ID") {
+                            SettingsTextField(text: $managementUserID, placeholder: "用户ID")
+                        }
                     }
                 } else {
                     Sub2APIAuthorizationImportSection(
@@ -2114,7 +2199,7 @@ private struct EditProviderSheet: View {
 
                         Task { @MainActor in
                             do {
-                                let trimmedBaseURL = normalizedSub2APIField(baseURL)
+                                let trimmedBaseURL = normalizedBaseURLField(baseURL, providerType: providerType)
                                 let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                                 let trimmedToken = managementToken.trimmingCharacters(in: .whitespacesAndNewlines)
                                 let trimmedUserID = managementUserID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2124,6 +2209,9 @@ private struct EditProviderSheet: View {
 
                                 switch providerType {
                                 case .newapi:
+                                    validatedSub2APIAuthorization = nil
+                                    validatedSub2APIDraft = nil
+                                case .cliProxy:
                                     validatedSub2APIAuthorization = nil
                                     validatedSub2APIDraft = nil
                                 case .sub2api:
@@ -2164,6 +2252,15 @@ private struct EditProviderSheet: View {
                                         if accountIdentityChanged {
                                             provider.accountQuota = nil
                                         }
+
+                                    case .cliProxy:
+                                        provider.managementToken = nextManagementToken
+                                        provider.managementUserID = nil
+                                        provider.accountQuota = nil
+                                        provider.sub2APIAccessToken = nil
+                                        provider.sub2APIRefreshToken = nil
+                                        provider.sub2APITokenExpiresAt = nil
+                                        provider.sub2APIUser = nil
 
                                     case .sub2api:
                                         provider.managementToken = nil
@@ -2237,12 +2334,15 @@ private struct EditProviderSheet: View {
     }
 
     private var isSaveDisabled: Bool {
-        let trimmedBaseURL = normalizedSub2APIField(baseURL)
+        let trimmedBaseURL = normalizedBaseURLField(baseURL, providerType: providerType)
         switch providerType {
         case .newapi:
             return trimmedBaseURL.isEmpty ||
                 managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 managementUserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .cliProxy:
+            return trimmedBaseURL.isEmpty ||
+                managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .sub2api:
             return trimmedBaseURL.isEmpty ||
                 normalizedSub2APIField(sub2APIAccessToken).isEmpty ||
@@ -2257,6 +2357,17 @@ private struct EditProviderSheet: View {
             refreshToken: sub2APIRefreshToken,
             tokenExpiresAt: sub2APITokenExpiresAt
         )
+    }
+
+    private var editProviderSubtitle: String {
+        switch providerType {
+        case .newapi:
+            return "更新站点信息后，可继续在主页同步账号额度、Key 额度和模型。"
+        case .cliProxy:
+            return "更新 BaseURL 或管理密钥后，可继续同步 API Keys 并刷新模型。"
+        case .sub2api:
+            return "更新 BaseURL 或重新导入登录态后，可继续同步账号余额、Keys 和模型。"
+        }
     }
 }
 
@@ -2284,7 +2395,7 @@ private struct AddProviderSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("添加站点")
                         .font(.title3.weight(.semibold))
-                    Text(providerType == .newapi ? "保存后会立即同步账号额度、Key 额度和模型。" : "保存后会立即同步账号余额、Key 额度和模型。")
+                    Text(addProviderSubtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -2306,18 +2417,20 @@ private struct AddProviderSheet: View {
                     )
                 }
 
-                if providerType == .newapi {
+                if providerType == .newapi || providerType == .cliProxy {
                     SettingsFieldBlock(title: "系统访问令牌") {
                         SettingsTextField(
                             text: $managementToken,
-                            placeholder: "系统访问令牌",
+                            placeholder: providerType == .cliProxy ? "Management Key" : "系统访问令牌",
                             monospaced: true,
                             enablesSelection: true
                         )
                     }
 
-                    SettingsFieldBlock(title: "用户ID") {
-                        SettingsTextField(text: $managementUserID, placeholder: "用户ID")
+                    if providerType == .newapi {
+                        SettingsFieldBlock(title: "用户ID") {
+                            SettingsTextField(text: $managementUserID, placeholder: "用户ID")
+                        }
                     }
                 } else {
                     Sub2APIAuthorizationImportSection(
@@ -2353,6 +2466,14 @@ private struct AddProviderSheet: View {
                                         baseURL: baseURL,
                                         managementToken: managementToken,
                                         managementUserID: managementUserID
+                                    )
+                                case .cliProxy:
+                                    providerID = state.addProvider(
+                                        type: providerType,
+                                        name: name,
+                                        baseURL: CLIProxyManagementClient.normalizedBaseURLString(baseURL),
+                                        managementToken: managementToken,
+                                        managementUserID: ""
                                     )
                                 case .sub2api:
                                     let validation = try await validateSub2APIAuthorizationDraft(
@@ -2396,12 +2517,15 @@ private struct AddProviderSheet: View {
     }
 
     private var isSaveDisabled: Bool {
-        let trimmedBaseURL = normalizedSub2APIField(baseURL)
+        let trimmedBaseURL = normalizedBaseURLField(baseURL, providerType: providerType)
         switch providerType {
         case .newapi:
             return trimmedBaseURL.isEmpty ||
                 managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 managementUserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .cliProxy:
+            return trimmedBaseURL.isEmpty ||
+                managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .sub2api:
             return trimmedBaseURL.isEmpty ||
                 normalizedSub2APIField(sub2APIAccessToken).isEmpty ||
@@ -2416,5 +2540,16 @@ private struct AddProviderSheet: View {
             refreshToken: sub2APIRefreshToken,
             tokenExpiresAt: sub2APITokenExpiresAt
         )
+    }
+
+    private var addProviderSubtitle: String {
+        switch providerType {
+        case .newapi:
+            return "保存后会立即同步账号额度、Key 额度和模型。"
+        case .cliProxy:
+            return "保存后会立即同步 API Keys，并开始刷新模型列表。"
+        case .sub2api:
+            return "保存后会立即同步账号余额、Key 额度和模型。"
+        }
     }
 }
