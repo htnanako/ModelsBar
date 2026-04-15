@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var state: ModelsBarState
     @State private var showingAddProvider = false
+    @State private var addProviderType: ProviderType = .newapi
     @State private var providerFrames: [UUID: CGRect] = [:]
     @State private var draggedProviderID: UUID?
 
@@ -85,18 +86,27 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
 
-                GlassIconButton(systemImage: "arrow.clockwise") {
+                HeaderSymbolButton(systemImage: "arrow.clockwise") {
                     Task { await state.syncAllManagedTokens() }
                 }
                 .help("刷新全部站点")
                 .disabled(state.isWorking || state.syncableProviderCount == 0)
 
-                GlassIconButton(systemImage: "plus", isProminent: true) {
-                    showingAddProvider = true
+                Menu {
+                    ForEach(ProviderType.allCases) { type in
+                        Button(type.title) {
+                            addProviderType = type
+                            showingAddProvider = true
+                        }
+                    }
+                } label: {
+                    HeaderSymbolLabel(systemImage: "plus")
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .help("添加站点")
                 .sheet(isPresented: $showingAddProvider) {
-                    AddProviderSheet()
+                    AddProviderSheet(providerType: addProviderType)
                         .environmentObject(state)
                 }
             }
@@ -1688,24 +1698,67 @@ private struct GlassIconButton: View {
     var systemImage: String
     var isProminent = false
     var isDestructive = false
+    var showsBorder = true
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(iconColor)
-                .frame(width: 34, height: 34)
-                .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(backgroundColor)
-                )
-                .overlay {
+            GlassIconButtonFace(
+                systemImage: systemImage,
+                isProminent: isProminent,
+                isDestructive: isDestructive,
+                showsBorder: showsBorder
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct HeaderSymbolButton: View {
+    var systemImage: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HeaderSymbolLabel(systemImage: systemImage)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct HeaderSymbolLabel: View {
+    var systemImage: String
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
+            .frame(width: 18, height: 34)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct GlassIconButtonFace: View {
+    var systemImage: String
+    var isProminent = false
+    var isDestructive = false
+    var showsBorder = true
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(iconColor)
+            .frame(width: 34, height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(backgroundColor)
+            )
+            .overlay {
+                if showsBorder {
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .stroke(borderColor, lineWidth: 1)
                 }
-        }
-        .buttonStyle(.plain)
+            }
     }
 
     private var iconColor: Color {
@@ -2498,8 +2551,8 @@ private struct EditProviderSheet: View {
 private struct AddProviderSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var state: ModelsBarState
-    @State private var providerType: ProviderType = .newapi
-    @State private var name = "NewAPI"
+    @State private var providerType: ProviderType
+    @State private var name: String
     @State private var baseURL = ""
     @State private var managementToken = ""
     @State private var managementUserID = ""
@@ -2511,6 +2564,11 @@ private struct AddProviderSheet: View {
     @State private var sub2APIAuthorizedDraft: Sub2APIAuthorizationDraft?
     @State private var saveErrorMessage: String?
     @State private var isAdding = false
+
+    init(providerType: ProviderType) {
+        _providerType = State(initialValue: providerType)
+        _name = State(initialValue: providerType.defaultProviderName)
+    }
 
     var body: some View {
         ZStack {
@@ -2526,7 +2584,7 @@ private struct AddProviderSheet: View {
                 }
 
                 SettingsFieldBlock(title: "站点类型") {
-                    ProviderTypePicker(selection: $providerType)
+                    ProviderTypePicker(selection: $providerType, isEditable: false)
                 }
 
                 SettingsFieldBlock(title: "名称") {
@@ -2647,12 +2705,6 @@ private struct AddProviderSheet: View {
             }
             .padding(28)
             .frame(width: 520)
-        }
-        .onChange(of: providerType) { oldValue, newValue in
-            if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name == oldValue.defaultProviderName {
-                name = newValue.defaultProviderName
-            }
-            saveErrorMessage = nil
         }
     }
 
