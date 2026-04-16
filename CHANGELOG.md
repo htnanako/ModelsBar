@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/htnanako/ModelsBar/compare/v1.1.1...v1.2.0) (2026-04-16)
+
+
+### Features
+
+* 🎸 add CC Switch codex account support ([e5591ca](https://github.com/htnanako/ModelsBar/commit/e5591ca8ed27a256bfa9aaaeb3b0cd6e17bd3372))
+* 🎸 Add CLI Proxy Codex account quotas and menu tabs ([934d986](https://github.com/htnanako/ModelsBar/commit/934d9863106b11112649bbbfee3152569bd5debf))
+
 ## [1.1.1](https://github.com/htnanako/ModelsBar/compare/v1.1.0...v1.1.1) (2026-04-15)
 
 
