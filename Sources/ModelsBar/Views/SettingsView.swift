@@ -297,6 +297,7 @@ private struct ProviderDetailView: View {
     @State private var showingEditSheet = false
     @State private var showingAddKeySheet = false
     @State private var connectivityInitialKeyID: UUID?
+    @State private var cliProxyContentTab: CLIProxyContentTab = .codexAccounts
 
     let providerID: UUID
 
@@ -437,6 +438,14 @@ private struct ProviderDetailView: View {
     }
 
     private func keyList(_ provider: ProviderConfig) -> some View {
+        if provider.type == .cliProxy {
+            return AnyView(cliProxyContentList(provider))
+        }
+
+        return AnyView(apiKeyList(provider))
+    }
+
+    private func apiKeyList(_ provider: ProviderConfig) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -480,6 +489,80 @@ private struct ProviderDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func cliProxyContentList(_ provider: ProviderConfig) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                CLIProxyContentTabs(selection: $cliProxyContentTab)
+
+                Spacer(minLength: 0)
+
+                if cliProxyContentTab == .apiKeys {
+                    Toggle("显示完整 Key", isOn: $state.revealsKeys)
+                        .toggleStyle(CompactSwitchToggleStyle())
+                        .disabled(provider.keys.isEmpty)
+                }
+            }
+
+            switch cliProxyContentTab {
+            case .apiKeys:
+                apiKeyListContent(provider)
+
+            case .codexAccounts:
+                codexAccountListContent(provider)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func apiKeyListContent(_ provider: ProviderConfig) -> some View {
+        Group {
+            if provider.keys.isEmpty {
+                EmptyHintView(title: "还没有 Key", message: emptyKeyMessage(provider), systemImage: "key")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 36)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 12) {
+                        ForEach(provider.keys) { apiKey in
+                            APIKeyRow(
+                                providerID: providerID,
+                                keyID: apiKey.id
+                            )
+                        }
+                    }
+                    .padding(.trailing, 4)
+                    .padding(.bottom, 2)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+    }
+
+    private func codexAccountListContent(_ provider: ProviderConfig) -> some View {
+        Group {
+            if provider.codexAccounts.isEmpty {
+                EmptyHintView(
+                    title: "还没有 Codex 账号",
+                    message: "同步数据后会从 auth 文件读取账号信息，并独立刷新 5h / 周额度。",
+                    systemImage: "person.crop.rectangle.stack"
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 36)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 12) {
+                        ForEach(provider.codexAccounts) { account in
+                            CodexAccountRow(providerID: providerID, account: account)
+                        }
+                    }
+                    .padding(.trailing, 4)
+                    .padding(.bottom, 2)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
     }
 
     private func keyListSubtitle(_ provider: ProviderConfig) -> String {
@@ -563,6 +646,51 @@ private struct ProviderDetailView: View {
             state.provider(id: providerID)?.isEnabled ?? false
         } set: { newValue in
             state.updateProvider(providerID) { $0.isEnabled = newValue }
+        }
+    }
+}
+
+private enum CLIProxyContentTab: String, CaseIterable, Identifiable {
+    case codexAccounts
+    case apiKeys
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .apiKeys:
+            return "API Keys"
+        case .codexAccounts:
+            return "Codex 账号"
+        }
+    }
+}
+
+private struct CLIProxyContentTabs: View {
+    @Binding var selection: CLIProxyContentTab
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(CLIProxyContentTab.allCases) { tab in
+                Button {
+                    selection = tab
+                } label: {
+                    Text(tab.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(selection == tab ? Color.white.opacity(0.12) : Color.white.opacity(0.04))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(selection == tab ? Color.white.opacity(0.14) : Color.white.opacity(0.08), lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }
@@ -776,6 +904,133 @@ private struct APIKeyRow: View {
 
     private var providerType: ProviderType? {
         state.provider(id: providerID)?.type
+    }
+}
+
+private struct CodexAccountRow: View {
+    @EnvironmentObject private var state: ModelsBarState
+    @State private var isRefreshing = false
+
+    let providerID: UUID
+    let account: CodexAccountSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        Text(account.email)
+                            .font(.headline.weight(.semibold))
+                            .lineLimit(1)
+
+                        InlineInfoPill(title: account.displayPlanType, tint: .secondary)
+                    }
+
+                    HStack(spacing: 8) {
+                        if let accountID = account.shortAccountID {
+                            InlineMetric(title: "账号", value: accountID, tint: .blue)
+                        }
+                        InlineMetric(title: "5h", value: account.fiveHourQuota.map { "已用 \($0.summaryDescription)" } ?? "--", tint: .mint)
+                        InlineMetric(title: "周", value: account.weeklyQuota.map { "已用 \($0.summaryDescription)" } ?? "--", tint: .purple)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Button {
+                            isRefreshing = true
+                            Task {
+                                await state.refreshCLIProxyCodexAccount(providerID: providerID, fileName: account.fileName)
+                                await MainActor.run {
+                                    isRefreshing = false
+                                }
+                            }
+                        } label: {
+                            Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.clockwise")
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(isRefreshing ? Color.accentColor : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("刷新此账号额度")
+                        .disabled(isRefreshing)
+
+                        StatusBadge(status: account.status)
+                    }
+
+                    if let quotaCheckedAt = account.quotaCheckedAt {
+                        Text(quotaCheckedAt.shortDisplay)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let authRefreshedAt = account.authRefreshedAt {
+                        Text(authRefreshedAt.shortDisplay)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            HStack(spacing: 12) {
+                CodexQuotaCard(quota: account.fiveHourQuota, accent: .mint)
+                CodexQuotaCard(quota: account.weeklyQuota, accent: .purple)
+            }
+        }
+        .padding(16)
+        .background(SettingsSurface(cornerRadius: 22, highlight: .subtle))
+    }
+}
+
+private struct CodexQuotaCard: View {
+    let quota: CodexQuotaSnapshot?
+    let accent: Color
+
+    var body: some View {
+        let tint = quota?.isDangerouslyLow == true ? Color.red : accent
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text(quota?.title ?? "--")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(quota?.summaryDescription ?? "--")
+                .font(.title3.weight(.semibold).monospacedDigit())
+
+            Text(quota?.detailDescription ?? "暂不可用")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.08))
+
+                    Capsule()
+                        .fill(tint.opacity(0.88))
+                        .frame(width: max(10, proxy.size.width * CGFloat(quota?.progressValue ?? 0.02)))
+                }
+            }
+            .frame(height: 8)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(tint.opacity(0.12), lineWidth: 1)
+        }
+    }
+}
+
+private extension CodexQuotaSnapshot {
+    var isDangerouslyLow: Bool {
+        switch progressTintKind {
+        case .danger:
+            return true
+        case .unknown, .healthy, .warning:
+            return false
+        }
     }
 }
 
@@ -1644,7 +1899,7 @@ private struct QuotaProgressView: View {
                     Capsule()
                         .fill(
                             LinearGradient(
-                                colors: [Color.accentColor.opacity(0.96), Color.blue.opacity(0.88)],
+                                colors: [progressTint.opacity(0.96), progressTint.opacity(0.78)],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             )
@@ -1662,6 +1917,25 @@ private struct QuotaProgressView: View {
 
     private var progress: CGFloat {
         CGFloat(apiKey.quotaProgress(for: providerType))
+    }
+
+    private var progressTint: Color {
+        if quotaSummary == "--" {
+            return .secondary
+        }
+
+        if quotaSummary == "无限额度" {
+            return .green
+        }
+
+        switch apiKey.quotaProgress(for: providerType) {
+        case 0..<0.15:
+            return .red
+        case 0..<0.35:
+            return .yellow
+        default:
+            return .green
+        }
     }
 }
 
@@ -2425,6 +2699,10 @@ private struct EditProviderSheet: View {
                                         provider.sub2APIRefreshToken = nil
                                         provider.sub2APITokenExpiresAt = nil
                                         provider.sub2APIUser = nil
+                                        if accountIdentityChanged {
+                                            provider.keys.removeAll()
+                                            provider.codexAccounts.removeAll()
+                                        }
 
                                     case .openAICompatible:
                                         provider.managementToken = nil
@@ -2742,7 +3020,7 @@ private struct AddProviderSheet: View {
         case .newapi:
             return "保存后会立即同步账号额度、Key 额度和模型。"
         case .cliProxy:
-            return "保存后会立即同步 API Keys，并开始刷新模型列表。"
+            return "保存后会立即同步 API Keys、Codex 账号额度，并开始刷新模型列表。"
         case .openAICompatible:
             return "保存后会立即添加第一个 API Key，并开始刷新模型列表。"
         case .sub2api:

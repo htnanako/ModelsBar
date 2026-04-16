@@ -72,6 +72,7 @@ struct ProviderConfig: Identifiable, Codable, Equatable, Hashable {
     var requiresManualKeyCompletion: Bool
     var isEnabled: Bool
     var keys: [APIKeyConfig]
+    var codexAccounts: [CodexAccountSnapshot]
     var createdAt: Date
     var updatedAt: Date
 
@@ -91,6 +92,7 @@ struct ProviderConfig: Identifiable, Codable, Equatable, Hashable {
         requiresManualKeyCompletion: Bool = false,
         isEnabled: Bool = true,
         keys: [APIKeyConfig] = [],
+        codexAccounts: [CodexAccountSnapshot] = [],
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -109,6 +111,7 @@ struct ProviderConfig: Identifiable, Codable, Equatable, Hashable {
         self.requiresManualKeyCompletion = requiresManualKeyCompletion
         self.isEnabled = isEnabled
         self.keys = keys
+        self.codexAccounts = codexAccounts
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -134,6 +137,7 @@ struct ProviderConfig: Identifiable, Codable, Equatable, Hashable {
         case requiresManualKeyCompletion
         case isEnabled
         case keys
+        case codexAccounts
         case createdAt
         case updatedAt
     }
@@ -155,6 +159,7 @@ struct ProviderConfig: Identifiable, Codable, Equatable, Hashable {
         requiresManualKeyCompletion = try container.decodeIfPresent(Bool.self, forKey: .requiresManualKeyCompletion) ?? false
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         keys = try container.decodeIfPresent([APIKeyConfig].self, forKey: .keys) ?? []
+        codexAccounts = try container.decodeIfPresent([CodexAccountSnapshot].self, forKey: .codexAccounts) ?? []
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .now
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .now
     }
@@ -549,6 +554,9 @@ extension ProviderConfig {
         case .sub2api:
             return sub2APIUser?.availableDescription ?? "--"
         case .cliProxy:
+            if codexAccounts.isEmpty == false {
+                return "\(codexAccounts.filter { $0.status == .healthy }.count)/\(codexAccounts.count)"
+            }
             return "--"
         case .openAICompatible:
             return "--"
@@ -575,6 +583,142 @@ extension ProviderConfig {
         case .openAICompatible:
             return "--"
         }
+    }
+}
+
+struct CodexQuotaSnapshot: Codable, Equatable, Hashable {
+    var windowMinutes: Int
+    var limit: Int?
+    var used: Int?
+    var remaining: Int?
+    var usedPercent: Int?
+    var resetsAt: Date?
+
+    var title: String {
+        switch windowMinutes {
+        case ..<360:
+            return "5h额度"
+        case 9_000...11_000:
+            return "周额度"
+        default:
+            return "\(max(windowMinutes / 60, 1))h额度"
+        }
+    }
+
+    var summaryDescription: String {
+        if let usedPercent {
+            return "\(remainingPercent(fromUsedPercent: usedPercent))%"
+        }
+        if let remaining, let limit {
+            return "\(remaining)/\(limit)"
+        }
+        if let used, let limit {
+            return "\(used)/\(limit)"
+        }
+        if let remaining {
+            return "\(remaining)"
+        }
+        if let limit {
+            return "\(limit)"
+        }
+        return "--"
+    }
+
+    var detailDescription: String {
+        if let usedPercent {
+            let remainingPercent = remainingPercent(fromUsedPercent: usedPercent)
+            if let resetsAt {
+                return "剩余 \(remainingPercent)% · 重置 \(resetsAt.formatted(date: .abbreviated, time: .shortened))"
+            }
+            return "剩余 \(remainingPercent)%"
+        }
+        if let remaining, let limit {
+            return "剩余 \(remaining) / 总量 \(limit)"
+        }
+        if let used, let limit {
+            return "已用 \(used) / 总量 \(limit)"
+        }
+        if let remaining {
+            return "剩余 \(remaining)"
+        }
+        if let used {
+            return "已用 \(used)"
+        }
+        return "暂不可用"
+    }
+
+    var progressValue: Double? {
+        if let usedPercent {
+            return Double(remainingPercent(fromUsedPercent: usedPercent)) / 100
+        }
+        if let remaining, let limit, limit > 0 {
+            return min(max(Double(remaining) / Double(limit), 0), 1)
+        }
+        if let used, let limit, limit > 0 {
+            return min(max(1 - (Double(used) / Double(limit)), 0), 1)
+        }
+        return nil
+    }
+
+    var progressTintKind: CodexQuotaTintKind {
+        guard let progressValue else {
+            return .unknown
+        }
+
+        switch progressValue {
+        case 0..<0.15:
+            return .danger
+        case 0..<0.35:
+            return .warning
+        default:
+            return .healthy
+        }
+    }
+
+    private func remainingPercent(fromUsedPercent usedPercent: Int) -> Int {
+        min(max(100 - usedPercent, 0), 100)
+    }
+}
+
+enum CodexQuotaTintKind: String, Codable, Equatable, Hashable {
+    case unknown
+    case healthy
+    case warning
+    case danger
+}
+
+struct CodexAccountSnapshot: Codable, Equatable, Hashable, Identifiable {
+    var id: String
+    var fileName: String
+    var email: String
+    var planType: String?
+    var accountID: String?
+    var disabled: Bool
+    var unavailable: Bool
+    var status: KeyStatus
+    var statusMessage: String?
+    var authRefreshedAt: Date?
+    var quotaCheckedAt: Date?
+    var fiveHourQuota: CodexQuotaSnapshot?
+    var weeklyQuota: CodexQuotaSnapshot?
+
+    var displayPlanType: String {
+        let trimmed = planType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Unknown Plan" : trimmed
+    }
+
+    var shortAccountID: String? {
+        guard let accountID else {
+            return nil
+        }
+        let trimmed = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else {
+            return nil
+        }
+        guard trimmed.count > 12 else {
+            return trimmed
+        }
+        return "\(trimmed.prefix(6))•••\(trimmed.suffix(4))"
     }
 }
 

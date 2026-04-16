@@ -33,6 +33,7 @@ final class ModelsBarState: ObservableObject {
     @Published private(set) var queuedModelTestRequests: [ModelTestRequest] = []
 
     let store: ModelsBarStore
+    private let codexAccountQuotaService = CodexAccountQuotaService()
     private var schedulerTask: Task<Void, Never>?
     private var modelTestQueueTask: Task<Void, Never>?
 
@@ -1014,7 +1015,7 @@ final class ModelsBarState: ObservableObject {
                 endProviderWork(providerID)
             }
         }
-        setStatus("正在同步 \(provider.name) 的 API Keys", providerID: providerID)
+        setStatus("正在同步 \(provider.name) 的 API Keys 和 Codex 账号", providerID: providerID)
 
         do {
             let client = CLIProxyManagementClient(
@@ -1025,15 +1026,105 @@ final class ModelsBarState: ObservableObject {
             let keys = try await client.fetchAPIKeys()
             mergeCLIProxyKeys(keys, providerID: providerID)
 
+            let codexAccounts: [CodexAccountSnapshot]
+            let codexStatusSuffix: String
+            do {
+                let authFiles = try await client.fetchAuthFiles()
+                let codexAuthPayloads = await loadCodexAuthFiles(
+                    summaries: authFiles.filter { $0.provider.caseInsensitiveCompare("codex") == .orderedSame },
+                    client: client
+                )
+                codexAccounts = await codexAccountQuotaService.refreshAccounts(from: codexAuthPayloads)
+                mergeCLIProxyCodexAccounts(codexAccounts, providerID: providerID)
+                codexStatusSuffix = "，读取 \(codexAccounts.count) 个 Codex 账号"
+            } catch {
+                codexAccounts = []
+                mergeCLIProxyCodexAccounts([], providerID: providerID)
+                codexStatusSuffix = "，Codex 账号刷新失败：\(error.localizedDescription)"
+            }
+
             if let refreshedProvider = self.provider(id: providerID) {
                 for key in refreshedProvider.keys where key.isEnabled {
                     await refreshKeyInfo(providerID: providerID, keyID: key.id, managesWorkingState: false)
                 }
             }
 
-            setStatus("已同步 \(keys.count) 个 API Key", providerID: providerID)
+            setStatus("已同步 \(keys.count) 个 API Key\(codexStatusSuffix)", providerID: providerID)
         } catch {
-            setStatus("同步 API Keys 失败：\(error.localizedDescription)", providerID: providerID)
+            setStatus("同步 CLI Proxy 数据失败：\(error.localizedDescription)", providerID: providerID)
+        }
+    }
+
+    private func loadCodexAuthFiles(
+        summaries: [CLIProxyAuthFileSummary],
+        client: CLIProxyManagementClient
+    ) async -> [CodexAuthFilePayload] {
+        var payloads: [CodexAuthFilePayload] = []
+
+        for summary in summaries {
+            guard let data = try? await client.downloadAuthFile(named: summary.name) else {
+                continue
+            }
+            payloads.append(
+                CodexAuthFilePayload(
+                    name: summary.name,
+                    provider: summary.provider,
+                    status: summary.status,
+                    statusMessage: summary.statusMessage,
+                    disabled: summary.disabled,
+                    unavailable: summary.unavailable,
+                    lastRefresh: summary.lastRefresh,
+                    data: data
+                )
+            )
+        }
+
+        return payloads
+    }
+
+    func refreshCLIProxyCodexAccount(providerID: UUID, fileName: String) async {
+        guard let provider = provider(id: providerID) else {
+            return
+        }
+
+        guard provider.type == .cliProxy else {
+            return
+        }
+
+        guard provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            setStatus("请先配置 BaseURL", providerID: providerID)
+            return
+        }
+
+        guard let managementToken = provider.managementToken,
+              managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            setStatus("请先配置管理密钥", providerID: providerID)
+            return
+        }
+
+        setStatus("正在刷新 Codex 账号额度", providerID: providerID)
+
+        do {
+            let client = CLIProxyManagementClient(
+                baseURLString: provider.baseURL,
+                managementKey: managementToken
+            )
+            let authFiles = try await client.fetchAuthFiles()
+            guard let summary = authFiles.first(where: { $0.name == fileName && $0.provider.caseInsensitiveCompare("codex") == .orderedSame }) else {
+                setStatus("未找到对应的 Codex 认证文件", providerID: providerID)
+                return
+            }
+
+            let payloads = await loadCodexAuthFiles(summaries: [summary], client: client)
+            guard let refreshed = await codexAccountQuotaService.refreshAccounts(from: payloads).first else {
+                setStatus("Codex 账号额度刷新失败", providerID: providerID)
+                return
+            }
+
+            mergeCLIProxyCodexAccount(refreshed, providerID: providerID)
+            setStatus("已刷新 \(refreshed.email) 的额度", providerID: providerID)
+        } catch {
+            setStatus("Codex 账号刷新失败：\(error.localizedDescription)", providerID: providerID)
         }
     }
 
@@ -1459,6 +1550,39 @@ final class ModelsBarState: ObservableObject {
 
         data.providers[providerIndex].keys = syncedKeys
         data.providers[providerIndex].requiresManualKeyCompletion = false
+        data.providers[providerIndex].updatedAt = .now
+        persist()
+    }
+
+    private func mergeCLIProxyCodexAccounts(_ accounts: [CodexAccountSnapshot], providerID: UUID) {
+        guard let providerIndex = data.providers.firstIndex(where: { $0.id == providerID }) else {
+            return
+        }
+
+        data.providers[providerIndex].codexAccounts = accounts
+        data.providers[providerIndex].updatedAt = .now
+        persist()
+    }
+
+    private func mergeCLIProxyCodexAccount(_ account: CodexAccountSnapshot, providerID: UUID) {
+        guard let providerIndex = data.providers.firstIndex(where: { $0.id == providerID }) else {
+            return
+        }
+
+        var accounts = data.providers[providerIndex].codexAccounts
+        if let index = accounts.firstIndex(where: { $0.fileName == account.fileName || $0.id == account.id }) {
+            accounts[index] = account
+        } else {
+            accounts.append(account)
+        }
+        accounts.sort {
+            if $0.email != $1.email {
+                return $0.email.localizedStandardCompare($1.email) == .orderedAscending
+            }
+            return $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending
+        }
+
+        data.providers[providerIndex].codexAccounts = accounts
         data.providers[providerIndex].updatedAt = .now
         persist()
     }

@@ -10,6 +10,7 @@ struct MenuBarPanelView: View {
     @State private var keyFrames: [UUID: CGRect] = [:]
     @State private var draggedProviderID: UUID?
     @State private var draggedKeyID: UUID?
+    @State private var cliProxyPanelTab: MenuCLIProxyPanelTab = .codexAccounts
 
     private static let coordinateSpaceName = "MenuBarPanelReorderSpace"
     private let providerTabSpacing: CGFloat = 6
@@ -288,7 +289,18 @@ struct MenuBarPanelView: View {
                 .disabled(state.isWorking)
             }
 
-            if provider.keys.isEmpty {
+            if provider.type == .cliProxy {
+                MenuCLIProxyPanelTabs(selection: $cliProxyPanelTab)
+                    .padding(.top, 1)
+
+                switch cliProxyPanelTab {
+                case .apiKeys:
+                    cliProxyAPIKeyList(provider)
+
+                case .codexAccounts:
+                    cliProxyCodexAccountList(provider)
+                }
+            } else if provider.keys.isEmpty {
                 CompactMenuPanel {
                     Text(emptyKeyMessage(provider))
                         .font(.caption)
@@ -308,11 +320,59 @@ struct MenuBarPanelView: View {
         }
     }
 
+    private func cliProxyAPIKeyList(_ provider: ProviderConfig) -> some View {
+        Group {
+            if provider.keys.isEmpty {
+                CompactMenuPanel {
+                    Text(emptyKeyMessage(provider))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if needsScrollableKeyList(provider) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    keyCards(provider)
+                        .padding(.trailing, 4)
+                }
+                .frame(maxHeight: maxKeyListHeight, alignment: .top)
+            } else {
+                keyCards(provider)
+            }
+        }
+    }
+
+    private func cliProxyCodexAccountList(_ provider: ProviderConfig) -> some View {
+        Group {
+            if provider.codexAccounts.isEmpty {
+                CompactMenuPanel {
+                    Text("点击同步后会读取 CLI Proxy API 管理端里的 Codex 认证账号。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if needsScrollableCodexAccountList(provider) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    codexAccountCards(provider)
+                        .padding(.trailing, 4)
+                }
+                .frame(maxHeight: maxKeyListHeight, alignment: .top)
+            } else {
+                codexAccountCards(provider)
+            }
+        }
+    }
+
     private func needsScrollableKeyList(_ provider: ProviderConfig) -> Bool {
-        let keyCardHeight: CGFloat = 104
+        let keyCardHeight: CGFloat = provider.type == .cliProxy ? 86 : 104
         let keyCardSpacing: CGFloat = 8
         let listHeight = CGFloat(provider.keys.count) * keyCardHeight
             + CGFloat(max(provider.keys.count - 1, 0)) * keyCardSpacing
+        return listHeight > maxKeyListHeight
+    }
+
+    private func needsScrollableCodexAccountList(_ provider: ProviderConfig) -> Bool {
+        let accountCardHeight: CGFloat = 124
+        let accountCardSpacing: CGFloat = 8
+        let listHeight = CGFloat(provider.codexAccounts.count) * accountCardHeight
+            + CGFloat(max(provider.codexAccounts.count - 1, 0)) * accountCardSpacing
         return listHeight > maxKeyListHeight
     }
 
@@ -352,6 +412,14 @@ struct MenuBarPanelView: View {
             }
         }
         .onPreferenceChange(KeyFramePreferenceKey.self) { keyFrames = $0 }
+    }
+
+    private func codexAccountCards(_ provider: ProviderConfig) -> some View {
+        VStack(spacing: 8) {
+            ForEach(provider.codexAccounts) { account in
+                MenuCodexAccountCard(providerID: provider.id, account: account)
+            }
+        }
     }
 
     private func providerFrameReader(_ providerID: UUID) -> some View {
@@ -427,6 +495,47 @@ private struct KeyFramePreferenceKey: PreferenceKey {
     }
 }
 
+private enum MenuCLIProxyPanelTab: String, CaseIterable, Identifiable {
+    case codexAccounts
+    case apiKeys
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .apiKeys:
+            return "API Key"
+        case .codexAccounts:
+            return "Codex 账号"
+        }
+    }
+}
+
+private struct MenuCLIProxyPanelTabs: View {
+    @Binding var selection: MenuCLIProxyPanelTab
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(MenuCLIProxyPanelTab.allCases) { tab in
+                Button {
+                    selection = tab
+                } label: {
+                    Text(tab.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(selection == tab ? Color.white.opacity(0.13) : Color.white.opacity(0.05))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 private struct KeyOverviewCard: View {
     @EnvironmentObject private var state: ModelsBarState
     let provider: ProviderConfig
@@ -455,38 +564,53 @@ private struct KeyOverviewCard: View {
                     Spacer()
 
                     StatusBadge(status: apiKey.isEnabled ? apiKey.lastStatus : .disabled)
-                    Button {
-                        copyAPIKey()
-                    } label: {
-                        Image(systemName: "doc.on.doc")
+                    if provider.type == .cliProxy {
+                        Button {
+                            Task { await state.refreshKeyInfo(providerID: provider.id, keyID: apiKey.id) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(canOperateWithKey ? "刷新额度和模型" : "请先到设置里补全完整 Key")
+                        .disabled(canOperateWithKey == false || state.isWorking || apiKey.isEnabled == false)
+                    } else {
+                        Button {
+                            copyAPIKey()
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.plain)
+                        .help(canCopyAPIKey ? "复制 Key" : "请先到设置里补全完整 Key")
+                        .disabled(canCopyAPIKey == false)
+                        ModelsStatusMenu(provider: provider, apiKey: apiKey)
+                            .disabled(canOperateWithKey == false)
                     }
-                    .buttonStyle(.plain)
-                    .help(canCopyAPIKey ? "复制 Key" : "请先到设置里补全完整 Key")
-                    .disabled(canCopyAPIKey == false)
-                    ModelsStatusMenu(provider: provider, apiKey: apiKey)
-                        .disabled(canOperateWithKey == false)
                 }
 
                 quotaProgress
 
-                HStack(spacing: 8) {
-                    metricText(
-                        title: "今日",
-                        value: todayUsageDescription,
-                        systemImage: "calendar"
-                    )
+                if provider.type != .cliProxy {
+                    HStack(spacing: 8) {
+                        metricText(
+                            title: "今日",
+                            value: todayUsageDescription,
+                            systemImage: "calendar"
+                        )
 
-                    Spacer()
+                        Spacer()
 
-                    Button {
-                        Task { await state.refreshKeyInfo(providerID: provider.id, keyID: apiKey.id) }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                        Button {
+                            Task { await state.refreshKeyInfo(providerID: provider.id, keyID: apiKey.id) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .help(canOperateWithKey ? "刷新额度和模型" : "请先到设置里补全完整 Key")
+                        .disabled(canOperateWithKey == false)
                     }
-                    .help(canOperateWithKey ? "刷新额度和模型" : "请先到设置里补全完整 Key")
-                    .disabled(canOperateWithKey == false)
+                    .disabled(state.isWorking || apiKey.isEnabled == false)
                 }
-                .disabled(state.isWorking || apiKey.isEnabled == false)
             }
         }
     }
@@ -505,9 +629,7 @@ private struct KeyOverviewCard: View {
                     .lineLimit(1)
             }
 
-            ProgressView(value: quotaProgressValue)
-                .progressViewStyle(.linear)
-                .tint(quotaProgressTint)
+            MenuQuotaProgressBar(value: quotaProgressValue, tint: quotaProgressTint)
         }
     }
 
@@ -524,7 +646,12 @@ private struct KeyOverviewCard: View {
     }
 
     private var quotaProgressTint: Color {
-        if apiKey.quotaSummary(for: provider.type) == "无限额度" {
+        let summary = apiKey.quotaSummary(for: provider.type)
+        if summary == "--" {
+            return .secondary
+        }
+
+        if summary == "无限额度" {
             return .green
         }
 
@@ -604,6 +731,143 @@ private struct KeyOverviewCard: View {
 
     private var needsManualCompletion: Bool {
         provider.type == .newapi && canOperateWithKey == false
+    }
+}
+
+private struct MenuCodexAccountCard: View {
+    @EnvironmentObject private var state: ModelsBarState
+    @State private var isRefreshing = false
+
+    let providerID: UUID
+    let account: CodexAccountSnapshot
+
+    var body: some View {
+        CompactMenuPanel {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(account.email)
+                                .font(.callout.weight(.semibold))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            Text(account.displayPlanType)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.white.opacity(0.08), in: Capsule())
+                        }
+
+                        if let accountID = account.shortAccountID {
+                            Text(accountID)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            isRefreshing = true
+                            Task {
+                                await state.refreshCLIProxyCodexAccount(providerID: providerID, fileName: account.fileName)
+                                await MainActor.run {
+                                    isRefreshing = false
+                                }
+                            }
+                        } label: {
+                            Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.clockwise")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(isRefreshing ? Color.accentColor : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("刷新此账号额度")
+                        .disabled(isRefreshing)
+
+                        StatusBadge(status: account.status)
+                    }
+                }
+
+                MenuCodexQuotaLine(title: "5h额度", quota: account.fiveHourQuota, tint: .mint)
+                MenuCodexQuotaLine(title: "周额度", quota: account.weeklyQuota, tint: .purple)
+            }
+        }
+    }
+}
+
+private struct MenuCodexQuotaLine: View {
+    let title: String
+    let quota: CodexQuotaSnapshot?
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+
+                Text(summaryText)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            MenuQuotaProgressBar(
+                value: quota?.progressValue ?? 0,
+                tint: quota?.isDangerouslyLow == true ? Color.red : tint
+            )
+        }
+    }
+
+    private var summaryText: String {
+        guard let quota else {
+            return "--"
+        }
+
+        let percent = "剩余 \(quota.summaryDescription)"
+        guard let resetsAt = quota.resetsAt else {
+            return percent
+        }
+
+        let dateStyle: Date.FormatStyle.DateStyle = Calendar.current.isDateInToday(resetsAt) ? .omitted : .abbreviated
+        return "\(percent) · \(resetsAt.formatted(date: dateStyle, time: .shortened))"
+    }
+}
+
+private extension CodexQuotaSnapshot {
+    var isDangerouslyLow: Bool {
+        switch progressTintKind {
+        case .danger:
+            return true
+        case .unknown, .healthy, .warning:
+            return false
+        }
+    }
+}
+
+private struct MenuQuotaProgressBar: View {
+    let value: Double
+    let tint: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.08))
+
+                Capsule()
+                    .fill(tint.opacity(0.88))
+                    .frame(width: max(8, proxy.size.width * CGFloat(min(max(value, 0), 1))))
+            }
+        }
+        .frame(height: 6)
     }
 }
 
