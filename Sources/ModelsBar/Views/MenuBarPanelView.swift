@@ -35,7 +35,8 @@ struct MenuBarPanelView: View {
         .padding(12)
         .frame(width: 440)
         .frame(maxHeight: maxWindowHeight, alignment: .top)
-        .background(.ultraThinMaterial)
+        .background(ModelsBarTheme.menuWindowBackground)
+        .background(MenuBarWindowConfigurator())
         .coordinateSpace(name: Self.coordinateSpaceName)
         .onAppear {
             if localSelectedProviderID == nil {
@@ -141,7 +142,7 @@ struct MenuBarPanelView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 2) {
             Divider()
-                .overlay(Color.white.opacity(0.06))
+                .overlay(ModelsBarTheme.menuSeparator)
                 .padding(.bottom, 4)
 
             MenuCommandRow(title: "Settings") {
@@ -239,7 +240,13 @@ struct MenuBarPanelView: View {
     }
 
     private var activeProviderSummaryText: String {
-        "\(activeProviderHealthyKeyCount)/\(activeProviderEnabledKeyCount) 个 Key 正常"
+        if selectedProvider?.type == .ccSwitch {
+            let accounts = selectedProvider?.codexAccounts ?? []
+            let healthyCount = accounts.filter { $0.effectiveStatus == .healthy }.count
+            return "\(healthyCount)/\(accounts.count) 个 Codex 账号正常"
+        }
+
+        return "\(activeProviderHealthyKeyCount)/\(activeProviderEnabledKeyCount) 个 Key 正常"
     }
 
     private var activeProviderQuotaPairDescription: String {
@@ -255,6 +262,17 @@ struct MenuBarPanelView: View {
     }
 
     private var activeProviderSymbol: String {
+        if selectedProvider?.type == .ccSwitch {
+            let accounts = selectedProvider?.codexAccounts ?? []
+            if accounts.contains(where: { [.failed, .exhausted, .warning].contains($0.effectiveStatus) }) {
+                return "exclamationmark.triangle.fill"
+            }
+            if accounts.contains(where: { $0.effectiveStatus == .healthy }) {
+                return "checkmark.circle.fill"
+            }
+            return "bolt.fill"
+        }
+
         if activeProviderFailedKeyCount > 0 {
             return "exclamationmark.triangle.fill"
         }
@@ -267,7 +285,12 @@ struct MenuBarPanelView: View {
     }
 
     private var activeProviderTint: Color {
-        activeProviderFailedKeyCount > 0 ? .red : .green
+        if selectedProvider?.type == .ccSwitch {
+            let accounts = selectedProvider?.codexAccounts ?? []
+            return accounts.contains(where: { [.failed, .exhausted, .warning].contains($0.effectiveStatus) }) ? .red : .green
+        }
+
+        return activeProviderFailedKeyCount > 0 ? .red : .green
     }
 
     private func providerKeyList(_ provider: ProviderConfig) -> some View {
@@ -300,6 +323,8 @@ struct MenuBarPanelView: View {
                 case .codexAccounts:
                     cliProxyCodexAccountList(provider)
                 }
+            } else if provider.type == .ccSwitch {
+                ccSwitchCodexAccountList(provider)
             } else if provider.keys.isEmpty {
                 CompactMenuPanel {
                     Text(emptyKeyMessage(provider))
@@ -341,10 +366,24 @@ struct MenuBarPanelView: View {
     }
 
     private func cliProxyCodexAccountList(_ provider: ProviderConfig) -> some View {
+        codexAccountList(
+            provider,
+            emptyMessage: "点击同步后会读取 CLI Proxy API 管理端里的 Codex 认证账号。"
+        )
+    }
+
+    private func ccSwitchCodexAccountList(_ provider: ProviderConfig) -> some View {
+        codexAccountList(
+            provider,
+            emptyMessage: "点击同步后会读取 CC Switch 本地数据库里的 Codex official 账号。"
+        )
+    }
+
+    private func codexAccountList(_ provider: ProviderConfig, emptyMessage: String) -> some View {
         Group {
             if provider.codexAccounts.isEmpty {
                 CompactMenuPanel {
-                    Text("点击同步后会读取 CLI Proxy API 管理端里的 Codex 认证账号。")
+                    Text(emptyMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -382,6 +421,8 @@ struct MenuBarPanelView: View {
             return "这个站点下还没有 Key。"
         case .cliProxy:
             return "点击同步后会拉取 CLI Proxy API 管理端里的全部 API Keys。"
+        case .ccSwitch:
+            return "点击同步后会读取 CC Switch 本地数据库里的 Codex official 账号。"
         case .openAICompatible:
             return "先到设置里手动添加 API Key，再点击刷新模型。"
         case .sub2api:
@@ -395,6 +436,8 @@ struct MenuBarPanelView: View {
             return "同步当前站点的账号额度、Keys、Key 额度和可用模型"
         case .cliProxy:
             return "同步 CLI Proxy API 管理端中的 API Keys，并刷新模型"
+        case .ccSwitch:
+            return "读取 CC Switch 本地数据库中的 Codex official 账号，并刷新额度"
         case .openAICompatible:
             return "刷新当前站点下全部手动维护 Key 的模型列表"
         case .sub2api:
@@ -495,6 +538,31 @@ private struct KeyFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct MenuBarWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            configureWindow(from: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            configureWindow(from: nsView)
+        }
+    }
+
+    private func configureWindow(from view: NSView) {
+        guard let window = view.window else {
+            return
+        }
+
+        window.backgroundColor = ModelsBarTheme.nsMenuWindowBackground
+        window.isOpaque = false
+    }
+}
+
 private enum MenuCLIProxyPanelTab: String, CaseIterable, Identifiable {
     case codexAccounts
     case apiKeys
@@ -527,7 +595,7 @@ private struct MenuCLIProxyPanelTabs: View {
                         .padding(.vertical, 6)
                         .background(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(selection == tab ? Color.white.opacity(0.13) : Color.white.opacity(0.05))
+                                .fill(selection == tab ? ModelsBarTheme.menuSurfaceStrong : ModelsBarTheme.menuSurface)
                         )
                 }
                 .buttonStyle(.plain)
@@ -757,7 +825,7 @@ private struct MenuCodexAccountCard: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
-                                .background(Color.white.opacity(0.08), in: Capsule())
+                                .background(ModelsBarTheme.pillBackground, in: Capsule())
                         }
 
                         if let accountID = account.shortAccountID {
@@ -774,7 +842,7 @@ private struct MenuCodexAccountCard: View {
                         Button {
                             isRefreshing = true
                             Task {
-                                await state.refreshCLIProxyCodexAccount(providerID: providerID, fileName: account.fileName)
+                                await state.refreshCodexAccount(providerID: providerID, fileName: account.fileName)
                                 await MainActor.run {
                                     isRefreshing = false
                                 }
@@ -788,7 +856,7 @@ private struct MenuCodexAccountCard: View {
                         .help("刷新此账号额度")
                         .disabled(isRefreshing)
 
-                        StatusBadge(status: account.status)
+                        StatusBadge(status: account.effectiveStatus)
                     }
                 }
 
@@ -860,7 +928,7 @@ private struct MenuQuotaProgressBar: View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(ModelsBarTheme.progressTrack)
 
                 Capsule()
                     .fill(tint.opacity(0.88))
@@ -889,10 +957,10 @@ private struct ProviderSwitchButton: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.92) : Color.white.opacity(0.06)))
+                    .fill(isSelected ? Color.accentColor.opacity(0.92) : ModelsBarTheme.menuSurface))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(isSelected ? Color.accentColor.opacity(0.7) : Color.white.opacity(0.08))
+                        .stroke(isSelected ? Color.accentColor.opacity(0.7) : ModelsBarTheme.menuBorderSoft)
                 }
         }
         .frame(minWidth: minimumWidth)
@@ -909,10 +977,10 @@ private struct CompactMenuPanel<Content: View>: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(ModelsBarTheme.menuSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(.white.opacity(0.14))
+                .stroke(ModelsBarTheme.menuBorder)
         }
     }
 }
@@ -947,7 +1015,7 @@ private struct MenuCommandRow: View {
             .padding(.vertical, 6)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isHovered ? Color.white.opacity(0.10) : .clear)
+                        .fill(isHovered ? ModelsBarTheme.menuHover : .clear)
                 )
         }
         .buttonStyle(.plain)
@@ -1030,7 +1098,7 @@ private struct ModelsStatusMenu: View {
             }
             .padding(12)
             .frame(width: 500)
-            .background(.regularMaterial)
+            .background(ModelsBarTheme.menuWindowBackground)
         }
     }
 
@@ -1123,7 +1191,7 @@ private struct MenuBarModelStatusRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(8)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ModelsBarTheme.menuSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var availableInterfaces: [OpenAIModelInterface] {
@@ -1155,7 +1223,7 @@ private struct MenuBarModelStatusRow: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(width: interfacePickerWidth, alignment: .leading)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(ModelsBarTheme.menuSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)

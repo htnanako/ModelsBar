@@ -3,8 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var state: ModelsBarState
-    @State private var showingAddProvider = false
-    @State private var addProviderType: ProviderType = .newapi
+    @State private var addProviderSheetType: ProviderType?
     @State private var providerFrames: [UUID: CGRect] = [:]
     @State private var draggedProviderID: UUID?
 
@@ -19,7 +18,7 @@ struct SettingsView: View {
                     .frame(width: 304)
 
                 Rectangle()
-                    .fill(.white.opacity(0.08))
+                    .fill(ModelsBarTheme.separator)
                     .frame(width: 1)
 
                 Group {
@@ -70,7 +69,7 @@ struct SettingsView: View {
         .padding(.top, 18)
         .padding(.bottom, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.black.opacity(0.16))
+        .background(ModelsBarTheme.settingsSidebarBackground)
     }
 
     private var sidebarHeader: some View {
@@ -95,8 +94,7 @@ struct SettingsView: View {
                 Menu {
                     ForEach(ProviderType.allCases) { type in
                         Button(type.title) {
-                            addProviderType = type
-                            showingAddProvider = true
+                            addProviderSheetType = type
                         }
                     }
                 } label: {
@@ -105,8 +103,8 @@ struct SettingsView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .help("添加站点")
-                .sheet(isPresented: $showingAddProvider) {
-                    AddProviderSheet(providerType: addProviderType)
+                .sheet(item: $addProviderSheetType) { providerType in
+                    AddProviderSheet(providerType: providerType)
                         .environmentObject(state)
                 }
             }
@@ -128,7 +126,7 @@ struct SettingsView: View {
             }
 
             Rectangle()
-                .fill(.white.opacity(0.08))
+                .fill(ModelsBarTheme.separator)
                 .frame(height: 1)
         }
     }
@@ -176,11 +174,11 @@ private struct ProviderSidebarCard: View {
     let action: () -> Void
 
     private var backgroundColor: Color {
-        isSelected ? Color.accentColor.opacity(0.94) : Color.white.opacity(0.03)
+        isSelected ? Color.accentColor.opacity(0.94) : ModelsBarTheme.menuSurface
     }
 
     private var borderColor: Color {
-        isSelected ? Color.white.opacity(0.16) : Color.white.opacity(0.06)
+        isSelected ? Color.white.opacity(0.16) : ModelsBarTheme.menuBorderSoft
     }
 
     private var titleColor: Color {
@@ -213,7 +211,7 @@ private struct ProviderSidebarCard: View {
                         .foregroundStyle(secondaryColor)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(Color.white.opacity(isSelected ? 0.14 : 0.08), in: Capsule())
+                        .background(isSelected ? Color.white.opacity(0.14) : ModelsBarTheme.pillBackground, in: Capsule())
 
                     Spacer(minLength: 0)
 
@@ -223,7 +221,7 @@ private struct ProviderSidebarCard: View {
                             .foregroundStyle(isSelected ? .white : .secondary)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background((isSelected ? Color.white : Color.white.opacity(0.08)).opacity(isSelected ? 0.14 : 1), in: Capsule())
+                            .background(isSelected ? Color.white.opacity(0.14) : ModelsBarTheme.pillBackground, in: Capsule())
                     }
                 }
 
@@ -392,10 +390,12 @@ private struct ProviderDetailView: View {
                     .disabled(state.isWorking)
                 }
 
-                SettingsActionButton(title: "模型连通性", systemImage: "waveform.path.ecg.rectangle") {
-                    openConnectivitySheet(for: provider.keys.first?.id)
+                if provider.type != .ccSwitch {
+                    SettingsActionButton(title: "模型连通性", systemImage: "waveform.path.ecg.rectangle") {
+                        openConnectivitySheet(for: provider.keys.first?.id)
+                    }
+                    .disabled(provider.keys.isEmpty)
                 }
-                .disabled(provider.keys.isEmpty)
 
                 SettingsActionButton(title: "编辑", systemImage: "slider.horizontal.3") {
                     showingEditSheet = true
@@ -417,7 +417,7 @@ private struct ProviderDetailView: View {
             .disabled(state.isWorking)
 
             Rectangle()
-                .fill(.white.opacity(0.08))
+                .fill(ModelsBarTheme.separator)
                 .frame(height: 1)
         }
     }
@@ -425,7 +425,7 @@ private struct ProviderDetailView: View {
     private func providerMetrics(_ provider: ProviderConfig) -> some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                SettingsMetricTile(title: "Key 状态", value: "\(healthyKeyCount(provider))/\(enabledKeyCount(provider))", systemImage: "key.horizontal", tint: .green)
+                SettingsMetricTile(title: provider.type == .ccSwitch ? "账号状态" : "Key 状态", value: statusCountDescription(provider), systemImage: provider.type == .ccSwitch ? "person.crop.circle.badge.checkmark" : "key.horizontal", tint: .green)
                 SettingsMetricTile(title: "今日总消耗", value: todayUsageDescription(provider), systemImage: "calendar", tint: .blue)
             }
 
@@ -440,6 +440,10 @@ private struct ProviderDetailView: View {
     private func keyList(_ provider: ProviderConfig) -> some View {
         if provider.type == .cliProxy {
             return AnyView(cliProxyContentList(provider))
+        }
+
+        if provider.type == .ccSwitch {
+            return AnyView(ccSwitchContentList(provider))
         }
 
         return AnyView(apiKeyList(provider))
@@ -516,6 +520,16 @@ private struct ProviderDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    private func ccSwitchContentList(_ provider: ProviderConfig) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Codex 账号")
+                .font(.headline.weight(.semibold))
+
+            codexAccountListContent(provider)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
     private func apiKeyListContent(_ provider: ProviderConfig) -> some View {
         Group {
             if provider.keys.isEmpty {
@@ -545,7 +559,9 @@ private struct ProviderDetailView: View {
             if provider.codexAccounts.isEmpty {
                 EmptyHintView(
                     title: "还没有 Codex 账号",
-                    message: "同步数据后会从 auth 文件读取账号信息，并独立刷新 5h / 周额度。",
+                    message: provider.type == .ccSwitch
+                        ? "同步数据后会从 CC Switch 数据库读取 Codex official 账号，并独立刷新 5h / 周额度。"
+                        : "同步数据后会从 auth 文件读取账号信息，并独立刷新 5h / 周额度。",
                     systemImage: "person.crop.rectangle.stack"
                 )
                 .frame(maxWidth: .infinity)
@@ -580,6 +596,10 @@ private struct ProviderDetailView: View {
             return provider.keys.isEmpty
                 ? "同步管理密钥后会自动拉取 CLI Proxy API 下的全部 API Keys。"
                 : "\(provider.keys.count) 个 API Key"
+        case .ccSwitch:
+            return provider.codexAccounts.isEmpty
+                ? "同步后会读取 CC Switch 本地数据库中的 Codex official 账号。"
+                : "\(provider.codexAccounts.count) 个 Codex official 账号"
         case .openAICompatible:
             return provider.keys.isEmpty
                 ? "手动添加 API Key 后即可刷新模型并进行双接口测试。"
@@ -600,6 +620,8 @@ private struct ProviderDetailView: View {
             return "配置系统访问令牌和用户ID后，同步即可拉取 Key。"
         case .cliProxy:
             return "配置 BaseURL 和管理密钥后，同步即可拉取 API Keys。"
+        case .ccSwitch:
+            return "配置 CC Switch 数据库路径后，同步即可读取 Codex official 账号。"
         case .openAICompatible:
             return "先点击上方“添加 Key”，再刷新模型列表。"
         case .sub2api:
@@ -613,6 +635,8 @@ private struct ProviderDetailView: View {
             return "API Keys"
         case .cliProxy:
             return "CLI Proxy API Keys"
+        case .ccSwitch:
+            return "Codex 账号"
         case .openAICompatible:
             return "API Keys"
         case .sub2api:
@@ -631,6 +655,14 @@ private struct ProviderDetailView: View {
 
     private func healthyKeyCount(_ provider: ProviderConfig) -> Int {
         provider.keys.filter { $0.lastStatus == .healthy }.count
+    }
+
+    private func statusCountDescription(_ provider: ProviderConfig) -> String {
+        if provider.type == .ccSwitch {
+            return "\(provider.codexAccounts.filter { $0.effectiveStatus == .healthy }.count)/\(provider.codexAccounts.count)"
+        }
+
+        return "\(healthyKeyCount(provider))/\(enabledKeyCount(provider))"
     }
 
     private func todayUsageDescription(_ provider: ProviderConfig) -> String {
@@ -682,11 +714,11 @@ private struct CLIProxyContentTabs: View {
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(selection == tab ? Color.white.opacity(0.12) : Color.white.opacity(0.04))
+                                .fill(selection == tab ? ModelsBarTheme.menuSurfaceStrong : ModelsBarTheme.menuSurface)
                         )
                         .overlay {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(selection == tab ? Color.white.opacity(0.14) : Color.white.opacity(0.08), lineWidth: 1)
+                                .stroke(selection == tab ? ModelsBarTheme.menuBorder : ModelsBarTheme.menuBorderSoft, lineWidth: 1)
                         }
                 }
                 .buttonStyle(.plain)
@@ -942,7 +974,7 @@ private struct CodexAccountRow: View {
                         Button {
                             isRefreshing = true
                             Task {
-                                await state.refreshCLIProxyCodexAccount(providerID: providerID, fileName: account.fileName)
+                                await state.refreshCodexAccount(providerID: providerID, fileName: account.fileName)
                                 await MainActor.run {
                                     isRefreshing = false
                                 }
@@ -956,7 +988,7 @@ private struct CodexAccountRow: View {
                         .help("刷新此账号额度")
                         .disabled(isRefreshing)
 
-                        StatusBadge(status: account.status)
+                        StatusBadge(status: account.effectiveStatus)
                     }
 
                     if let quotaCheckedAt = account.quotaCheckedAt {
@@ -1004,7 +1036,7 @@ private struct CodexQuotaCard: View {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.08))
+                        .fill(ModelsBarTheme.progressTrack)
 
                     Capsule()
                         .fill(tint.opacity(0.88))
@@ -1174,6 +1206,8 @@ private struct ModelConnectivitySheet: View {
             return "先同步系统访问令牌，或手动添加一个 Key。"
         case .cliProxy:
             return "先同步 CLI Proxy API 管理端里的 API Keys。"
+        case .ccSwitch:
+            return "CC Switch 站点只展示 Codex official 账号额度，不进行模型连通性测试。"
         case .openAICompatible:
             return "先手动添加一个 API Key，再刷新模型列表。"
         case .sub2api:
@@ -1530,7 +1564,7 @@ private struct ConnectivityEmptyState: View {
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 42, height: 42)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(ModelsBarTheme.controlBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(title)
@@ -1576,13 +1610,13 @@ private struct SettingsWelcomeView: View {
 private struct SettingsWindowBackground: View {
     var body: some View {
         ZStack {
-            Color(red: 0.08, green: 0.08, blue: 0.10)
+            ModelsBarTheme.settingsWindowBackground
 
             LinearGradient(
                 colors: [
-                    Color(red: 0.50, green: 0.21, blue: 0.24).opacity(0.74),
-                    Color(red: 0.54, green: 0.38, blue: 0.14).opacity(0.58),
-                    Color(red: 0.11, green: 0.11, blue: 0.13).opacity(0.98)
+                    ModelsBarTheme.settingsGradientStart,
+                    ModelsBarTheme.settingsGradientMiddle,
+                    ModelsBarTheme.settingsGradientEnd
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -1591,7 +1625,7 @@ private struct SettingsWindowBackground: View {
 
             RadialGradient(
                 colors: [
-                    Color.white.opacity(0.14),
+                    ModelsBarTheme.settingsGlow,
                     Color.clear
                 ],
                 center: .topTrailing,
@@ -1627,7 +1661,7 @@ private struct SettingsWindowConfigurator: NSViewRepresentable {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
+        window.backgroundColor = ModelsBarTheme.nsSettingsWindowBackground
         window.isOpaque = false
         window.identifier = modelsBarSettingsWindowIdentifier
         window.styleMask.insert(.fullSizeContentView)
@@ -1708,8 +1742,8 @@ private struct SettingsSurface: View {
         case .hero:
             return LinearGradient(
                 colors: [
-                    Color.white.opacity(0.16),
-                    Color.white.opacity(0.08)
+                    ModelsBarTheme.surfaceHeroStart,
+                    ModelsBarTheme.surfaceHeroEnd
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -1717,8 +1751,8 @@ private struct SettingsSurface: View {
         case .subtle:
             return LinearGradient(
                 colors: [
-                    Color.white.opacity(0.09),
-                    Color.white.opacity(0.04)
+                    ModelsBarTheme.surfaceSubtleStart,
+                    ModelsBarTheme.surfaceSubtleEnd
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -1726,8 +1760,8 @@ private struct SettingsSurface: View {
         case .soft:
             return LinearGradient(
                 colors: [
-                    Color.white.opacity(0.07),
-                    Color.white.opacity(0.03)
+                    ModelsBarTheme.surfaceSoftStart,
+                    ModelsBarTheme.surfaceSoftEnd
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -1737,17 +1771,17 @@ private struct SettingsSurface: View {
 
     private var borderColor: Color {
         switch highlight {
-        case .hero: return .white.opacity(0.18)
-        case .subtle: return .white.opacity(0.11)
-        case .soft: return .white.opacity(0.08)
+        case .hero: return ModelsBarTheme.surfaceHeroBorder
+        case .subtle: return ModelsBarTheme.surfaceSubtleBorder
+        case .soft: return ModelsBarTheme.surfaceSoftBorder
         }
     }
 
     private var shadowColor: Color {
         switch highlight {
-        case .hero: return .black.opacity(0.20)
-        case .subtle: return .black.opacity(0.14)
-        case .soft: return .black.opacity(0.10)
+        case .hero: return ModelsBarTheme.surfaceHeroShadow
+        case .subtle: return ModelsBarTheme.surfaceSubtleShadow
+        case .soft: return ModelsBarTheme.surfaceSoftShadow
         }
     }
 }
@@ -1795,10 +1829,10 @@ private struct SettingsTextField: View {
 private struct SettingsInputBackground: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color.black.opacity(0.18))
+            .fill(ModelsBarTheme.inputBackground)
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(.white.opacity(0.08), lineWidth: 1)
+                    .stroke(ModelsBarTheme.inputBorder, lineWidth: 1)
             }
     }
 }
@@ -1894,7 +1928,7 @@ private struct QuotaProgressView: View {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.08))
+                        .fill(ModelsBarTheme.progressTrack)
 
                     Capsule()
                         .fill(
@@ -1957,11 +1991,11 @@ private struct SettingsActionButton: View {
                 .foregroundStyle(isDestructive ? Color.red.opacity(0.96) : Color.primary)
                 .background(
                     RoundedRectangle(cornerRadius: compact ? 12 : 14, style: .continuous)
-                        .fill(isDestructive ? Color.red.opacity(0.10) : Color.white.opacity(0.08))
+                        .fill(isDestructive ? Color.red.opacity(0.10) : ModelsBarTheme.controlBackground)
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: compact ? 12 : 14, style: .continuous)
-                        .stroke(isDestructive ? Color.red.opacity(0.18) : Color.white.opacity(0.10), lineWidth: 1)
+                        .stroke(isDestructive ? Color.red.opacity(0.18) : ModelsBarTheme.controlBorder, lineWidth: 1)
                 }
         }
         .buttonStyle(.plain)
@@ -2046,14 +2080,14 @@ private struct GlassIconButtonFace: View {
         if isDestructive {
             return .red.opacity(0.12)
         }
-        return isProminent ? Color.accentColor.opacity(0.92) : Color.white.opacity(0.08)
+        return isProminent ? Color.accentColor.opacity(0.92) : ModelsBarTheme.controlBackground
     }
 
     private var borderColor: Color {
         if isDestructive {
             return .red.opacity(0.18)
         }
-        return isProminent ? Color.white.opacity(0.14) : Color.white.opacity(0.10)
+        return isProminent ? Color.white.opacity(0.14) : ModelsBarTheme.controlBorder
     }
 }
 
@@ -2082,12 +2116,12 @@ private struct ConnectivityTabButton: View {
                     .fill(
                         isSelected
                             ? Color.accentColor.opacity(0.94)
-                            : Color.white.opacity(0.08)
+                            : ModelsBarTheme.controlBackground
                     )
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(isSelected ? Color.white.opacity(0.16) : Color.white.opacity(0.08), lineWidth: 1)
+                    .stroke(isSelected ? Color.white.opacity(0.16) : ModelsBarTheme.controlBorder, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
@@ -2104,11 +2138,11 @@ private struct CompactSwitchToggleStyle: ToggleStyle {
             } label: {
                 ZStack(alignment: configuration.isOn ? .trailing : .leading) {
                     Capsule()
-                        .fill(configuration.isOn ? Color.accentColor.opacity(0.96) : Color.white.opacity(0.14))
+                        .fill(configuration.isOn ? Color.accentColor.opacity(0.96) : ModelsBarTheme.inactiveSwitchTrack)
                         .frame(width: 38, height: 22)
 
                     Circle()
-                        .fill(.white.opacity(0.96))
+                        .fill(ModelsBarTheme.switchThumb)
                         .frame(width: 16, height: 16)
                         .padding(3)
                         .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
@@ -2377,6 +2411,14 @@ private func normalizedSub2APIField(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+private func providerEndpointFieldTitle(_ providerType: ProviderType) -> String {
+    providerType == .ccSwitch ? "数据库路径" : "BaseURL"
+}
+
+private func providerEndpointPlaceholder(_ providerType: ProviderType) -> String {
+    providerType == .ccSwitch ? CCSwitchCodexAccountService.defaultDatabasePath : "https://example.com"
+}
+
 private func normalizedBaseURLField(_ value: String, providerType: ProviderType? = nil) -> String {
     let trimmed = normalizedSub2APIField(value)
     guard let providerType else {
@@ -2574,10 +2616,10 @@ private struct EditProviderSheet: View {
                     SettingsTextField(text: $name, placeholder: providerType.defaultProviderName)
                 }
 
-                SettingsFieldBlock(title: "BaseURL") {
+                SettingsFieldBlock(title: providerEndpointFieldTitle(providerType)) {
                     SettingsTextField(
                         text: $baseURL,
-                        placeholder: "https://example.com",
+                        placeholder: providerEndpointPlaceholder(providerType),
                         monospaced: true,
                         enablesSelection: true
                     )
@@ -2601,6 +2643,16 @@ private struct EditProviderSheet: View {
                 } else if providerType == .openAICompatible {
                     SettingsFieldBlock(title: "API Key") {
                         Text("这个类型的 API Keys 在站点详情页中单独管理。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(SettingsInputBackground())
+                    }
+                } else if providerType == .ccSwitch {
+                    SettingsFieldBlock(title: "说明") {
+                        Text("将从本机 CC Switch SQLite 数据库读取 Codex official 登录信息，自定义第三方 Codex Provider 会被跳过。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2650,6 +2702,9 @@ private struct EditProviderSheet: View {
                                     validatedSub2APIAuthorization = nil
                                     validatedSub2APIDraft = nil
                                 case .openAICompatible:
+                                    validatedSub2APIAuthorization = nil
+                                    validatedSub2APIDraft = nil
+                                case .ccSwitch:
                                     validatedSub2APIAuthorization = nil
                                     validatedSub2APIDraft = nil
                                 case .sub2api:
@@ -2712,6 +2767,19 @@ private struct EditProviderSheet: View {
                                         provider.sub2APIRefreshToken = nil
                                         provider.sub2APITokenExpiresAt = nil
                                         provider.sub2APIUser = nil
+
+                                    case .ccSwitch:
+                                        provider.managementToken = nil
+                                        provider.managementUserID = nil
+                                        provider.accountQuota = nil
+                                        provider.sub2APIAccessToken = nil
+                                        provider.sub2APIRefreshToken = nil
+                                        provider.sub2APITokenExpiresAt = nil
+                                        provider.sub2APIUser = nil
+                                        provider.keys.removeAll()
+                                        if accountIdentityChanged {
+                                            provider.codexAccounts.removeAll()
+                                        }
 
                                     case .sub2api:
                                         provider.managementToken = nil
@@ -2796,6 +2864,8 @@ private struct EditProviderSheet: View {
                 managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .openAICompatible:
             return trimmedBaseURL.isEmpty
+        case .ccSwitch:
+            return trimmedBaseURL.isEmpty
         case .sub2api:
             return trimmedBaseURL.isEmpty ||
                 normalizedSub2APIField(sub2APIAccessToken).isEmpty ||
@@ -2820,6 +2890,8 @@ private struct EditProviderSheet: View {
             return "更新 BaseURL 或管理密钥后，可继续同步 API Keys 并刷新模型。"
         case .openAICompatible:
             return "更新名称或 BaseURL 后，可继续手动管理多个 API Key 并刷新模型。"
+        case .ccSwitch:
+            return "更新数据库路径后，可继续从 CC Switch 本地配置读取 Codex official 账号额度。"
         case .sub2api:
             return "更新 BaseURL 或重新导入登录态后，可继续同步账号余额、Keys 和模型。"
         }
@@ -2846,6 +2918,7 @@ private struct AddProviderSheet: View {
     init(providerType: ProviderType) {
         _providerType = State(initialValue: providerType)
         _name = State(initialValue: providerType.defaultProviderName)
+        _baseURL = State(initialValue: providerType == .ccSwitch ? CCSwitchCodexAccountService.defaultDatabasePath : "")
     }
 
     var body: some View {
@@ -2869,10 +2942,10 @@ private struct AddProviderSheet: View {
                     SettingsTextField(text: $name, placeholder: providerType.defaultProviderName)
                 }
 
-                SettingsFieldBlock(title: "BaseURL") {
+                SettingsFieldBlock(title: providerEndpointFieldTitle(providerType)) {
                     SettingsTextField(
                         text: $baseURL,
-                        placeholder: "https://example.com",
+                        placeholder: providerEndpointPlaceholder(providerType),
                         monospaced: true,
                         enablesSelection: true
                     )
@@ -2901,6 +2974,16 @@ private struct AddProviderSheet: View {
                             monospaced: true,
                             enablesSelection: true
                         )
+                    }
+                } else if providerType == .ccSwitch {
+                    SettingsFieldBlock(title: "说明") {
+                        Text("将从本机 CC Switch SQLite 数据库读取 Codex official 登录信息，自定义第三方 Codex Provider 会被跳过。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(SettingsInputBackground())
                     }
                 } else {
                     Sub2APIAuthorizationImportSection(
@@ -2951,6 +3034,14 @@ private struct AddProviderSheet: View {
                                         baseURL: baseURL,
                                         apiKey: apiKey
                                     )
+                                case .ccSwitch:
+                                    providerID = state.addProvider(
+                                        type: providerType,
+                                        name: name,
+                                        baseURL: normalizedBaseURLField(baseURL, providerType: providerType),
+                                        managementToken: "",
+                                        managementUserID: ""
+                                    )
                                 case .sub2api:
                                     let validation = try await validateSub2APIAuthorizationDraft(
                                         state: state,
@@ -2999,6 +3090,8 @@ private struct AddProviderSheet: View {
         case .openAICompatible:
             return trimmedBaseURL.isEmpty ||
                 apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .ccSwitch:
+            return trimmedBaseURL.isEmpty
         case .sub2api:
             return trimmedBaseURL.isEmpty ||
                 normalizedSub2APIField(sub2APIAccessToken).isEmpty ||
@@ -3023,6 +3116,8 @@ private struct AddProviderSheet: View {
             return "保存后会立即同步 API Keys、Codex 账号额度，并开始刷新模型列表。"
         case .openAICompatible:
             return "保存后会立即添加第一个 API Key，并开始刷新模型列表。"
+        case .ccSwitch:
+            return "保存后会读取 CC Switch 本地数据库中的 Codex official 账号，并刷新额度。"
         case .sub2api:
             return "保存后会立即同步账号余额、Key 额度和模型。"
         }

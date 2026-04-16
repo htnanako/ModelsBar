@@ -450,6 +450,8 @@ final class ModelsBarState: ObservableObject {
             await syncCLIProxyManagedTokens(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         case .openAICompatible:
             await syncOpenAICompatibleKeys(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
+        case .ccSwitch:
+            await syncCCSwitchCodexAccounts(providerID: providerID, provider: provider, managesWorkingState: managesWorkingState)
         }
     }
 
@@ -489,6 +491,8 @@ final class ModelsBarState: ObservableObject {
             setStatus("CLI Proxy API 暂不提供账号额度信息", providerID: providerID)
         case .openAICompatible:
             setStatus("OpenAI Compatible 直连站点暂不提供账号额度信息", providerID: providerID)
+        case .ccSwitch:
+            setStatus("CC Switch 站点使用 Codex 账号额度卡片刷新", providerID: providerID)
         }
     }
 
@@ -507,6 +511,10 @@ final class ModelsBarState: ObservableObject {
                 key.lastCheckedAt = .now
             }
         case .openAICompatible:
+            updateKey(providerID: providerID, keyID: keyID) { key in
+                key.lastCheckedAt = .now
+            }
+        case .ccSwitch:
             updateKey(providerID: providerID, keyID: keyID) { key in
                 key.lastCheckedAt = .now
             }
@@ -816,7 +824,7 @@ final class ModelsBarState: ObservableObject {
     }
 
     private var syncSupportedProviderTypes: Set<ProviderType> {
-        [.newapi, .sub2api, .cliProxy, .openAICompatible]
+        [.newapi, .sub2api, .cliProxy, .openAICompatible, .ccSwitch]
     }
 
     private var openAIGatewaySupportedProviderTypes: Set<ProviderType> {
@@ -1035,11 +1043,11 @@ final class ModelsBarState: ObservableObject {
                     client: client
                 )
                 codexAccounts = await codexAccountQuotaService.refreshAccounts(from: codexAuthPayloads)
-                mergeCLIProxyCodexAccounts(codexAccounts, providerID: providerID)
+                mergeCodexAccounts(codexAccounts, providerID: providerID)
                 codexStatusSuffix = "，读取 \(codexAccounts.count) 个 Codex 账号"
             } catch {
                 codexAccounts = []
-                mergeCLIProxyCodexAccounts([], providerID: providerID)
+                mergeCodexAccounts([], providerID: providerID)
                 codexStatusSuffix = "，Codex 账号刷新失败：\(error.localizedDescription)"
             }
 
@@ -1052,6 +1060,37 @@ final class ModelsBarState: ObservableObject {
             setStatus("已同步 \(keys.count) 个 API Key\(codexStatusSuffix)", providerID: providerID)
         } catch {
             setStatus("同步 CLI Proxy 数据失败：\(error.localizedDescription)", providerID: providerID)
+        }
+    }
+
+    private func syncCCSwitchCodexAccounts(providerID: UUID, provider: ProviderConfig, managesWorkingState: Bool) async {
+        if managesWorkingState {
+            isWorking = true
+            beginProviderWork(providerID)
+        }
+        defer {
+            if managesWorkingState {
+                isWorking = false
+                endProviderWork(providerID)
+            }
+        }
+
+        setStatus("正在读取 CC Switch 的 Codex 官方账号", providerID: providerID)
+
+        do {
+            let service = CCSwitchCodexAccountService(databasePath: provider.baseURL)
+            let authPayloads = try service.loadCodexAuthFiles()
+            let codexAccounts = await codexAccountQuotaService.refreshAccounts(from: authPayloads)
+            mergeCodexAccounts(codexAccounts, providerID: providerID)
+
+            if codexAccounts.isEmpty {
+                setStatus("未在 CC Switch 数据库中找到可用的 Codex 官方账号", providerID: providerID)
+            } else {
+                setStatus("已读取 \(codexAccounts.count) 个 CC Switch Codex 官方账号", providerID: providerID)
+            }
+        } catch {
+            mergeCodexAccounts([], providerID: providerID)
+            setStatus("读取 CC Switch Codex 账号失败：\(error.localizedDescription)", providerID: providerID)
         }
     }
 
@@ -1082,15 +1121,22 @@ final class ModelsBarState: ObservableObject {
         return payloads
     }
 
-    func refreshCLIProxyCodexAccount(providerID: UUID, fileName: String) async {
+    func refreshCodexAccount(providerID: UUID, fileName: String) async {
         guard let provider = provider(id: providerID) else {
             return
         }
 
-        guard provider.type == .cliProxy else {
+        switch provider.type {
+        case .cliProxy:
+            await refreshCLIProxyCodexAccount(providerID: providerID, provider: provider, fileName: fileName)
+        case .ccSwitch:
+            await refreshCCSwitchCodexAccount(providerID: providerID, provider: provider, fileName: fileName)
+        case .newapi, .sub2api, .openAICompatible:
             return
         }
+    }
 
+    private func refreshCLIProxyCodexAccount(providerID: UUID, provider: ProviderConfig, fileName: String) async {
         guard provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             setStatus("请先配置 BaseURL", providerID: providerID)
             return
@@ -1121,10 +1167,33 @@ final class ModelsBarState: ObservableObject {
                 return
             }
 
-            mergeCLIProxyCodexAccount(refreshed, providerID: providerID)
+            mergeCodexAccount(refreshed, providerID: providerID)
             setStatus("已刷新 \(refreshed.email) 的额度", providerID: providerID)
         } catch {
             setStatus("Codex 账号刷新失败：\(error.localizedDescription)", providerID: providerID)
+        }
+    }
+
+    private func refreshCCSwitchCodexAccount(providerID: UUID, provider: ProviderConfig, fileName: String) async {
+        setStatus("正在刷新 CC Switch Codex 账号额度", providerID: providerID)
+
+        do {
+            let service = CCSwitchCodexAccountService(databasePath: provider.baseURL)
+            let payloads = try service.loadCodexAuthFiles().filter { $0.name == fileName }
+            guard payloads.isEmpty == false else {
+                setStatus("未找到对应的 CC Switch Codex 官方账号", providerID: providerID)
+                return
+            }
+
+            guard let refreshed = await codexAccountQuotaService.refreshAccounts(from: payloads).first else {
+                setStatus("CC Switch Codex 账号额度刷新失败", providerID: providerID)
+                return
+            }
+
+            mergeCodexAccount(refreshed, providerID: providerID)
+            setStatus("已刷新 \(refreshed.email) 的额度", providerID: providerID)
+        } catch {
+            setStatus("CC Switch Codex 账号刷新失败：\(error.localizedDescription)", providerID: providerID)
         }
     }
 
@@ -1554,7 +1623,7 @@ final class ModelsBarState: ObservableObject {
         persist()
     }
 
-    private func mergeCLIProxyCodexAccounts(_ accounts: [CodexAccountSnapshot], providerID: UUID) {
+    private func mergeCodexAccounts(_ accounts: [CodexAccountSnapshot], providerID: UUID) {
         guard let providerIndex = data.providers.firstIndex(where: { $0.id == providerID }) else {
             return
         }
@@ -1564,7 +1633,7 @@ final class ModelsBarState: ObservableObject {
         persist()
     }
 
-    private func mergeCLIProxyCodexAccount(_ account: CodexAccountSnapshot, providerID: UUID) {
+    private func mergeCodexAccount(_ account: CodexAccountSnapshot, providerID: UUID) {
         guard let providerIndex = data.providers.firstIndex(where: { $0.id == providerID }) else {
             return
         }

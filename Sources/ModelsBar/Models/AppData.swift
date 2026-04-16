@@ -13,6 +13,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
     case sub2api
     case cliProxy
     case openAICompatible
+    case ccSwitch
 
     var id: String { rawValue }
 
@@ -26,6 +27,8 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
             return "CLI Proxy API"
         case .openAICompatible:
             return "OpenAI Compatible"
+        case .ccSwitch:
+            return "CC Switch"
         }
     }
 
@@ -35,6 +38,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
         case .sub2api: "Sub2API"
         case .cliProxy: "CLI Proxy API"
         case .openAICompatible: "OpenAI Compatible"
+        case .ccSwitch: "CC Switch"
         }
     }
 
@@ -48,6 +52,8 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Identifiable {
             self = .cliProxy
         case ProviderType.openAICompatible.rawValue, "openai-compatible", "openai", "direct":
             self = .openAICompatible
+        case ProviderType.ccSwitch.rawValue, "cc-switch", "ccswitch":
+            self = .ccSwitch
         case ProviderType.newapi.rawValue:
             self = .newapi
         default:
@@ -395,6 +401,7 @@ enum KeyStatus: String, Codable, CaseIterable {
     case unknown
     case healthy
     case warning
+    case exhausted
     case failed
     case disabled
 
@@ -403,6 +410,7 @@ enum KeyStatus: String, Codable, CaseIterable {
         case .unknown: "未检测"
         case .healthy: "正常"
         case .warning: "需注意"
+        case .exhausted: "已用完"
         case .failed: "失败"
         case .disabled: "已停用"
         }
@@ -413,6 +421,7 @@ enum KeyStatus: String, Codable, CaseIterable {
         case .unknown: "questionmark.circle"
         case .healthy: "checkmark.circle.fill"
         case .warning: "exclamationmark.triangle.fill"
+        case .exhausted: "xmark.circle.fill"
         case .failed: "xmark.circle.fill"
         case .disabled: "pause.circle"
         }
@@ -555,7 +564,12 @@ extension ProviderConfig {
             return sub2APIUser?.availableDescription ?? "--"
         case .cliProxy:
             if codexAccounts.isEmpty == false {
-                return "\(codexAccounts.filter { $0.status == .healthy }.count)/\(codexAccounts.count)"
+                return "\(codexAccounts.filter { $0.effectiveStatus == .healthy }.count)/\(codexAccounts.count)"
+            }
+            return "--"
+        case .ccSwitch:
+            if codexAccounts.isEmpty == false {
+                return "\(codexAccounts.filter { $0.effectiveStatus == .healthy }.count)/\(codexAccounts.count)"
             }
             return "--"
         case .openAICompatible:
@@ -579,6 +593,8 @@ extension ProviderConfig {
             }
             return values.reduce(0, +).usdDescription
         case .cliProxy:
+            return "--"
+        case .ccSwitch:
             return "--"
         case .openAICompatible:
             return "--"
@@ -720,6 +736,28 @@ struct CodexAccountSnapshot: Codable, Equatable, Hashable, Identifiable {
         }
         return "\(trimmed.prefix(6))•••\(trimmed.suffix(4))"
     }
+
+    var effectiveStatus: KeyStatus {
+        if disabled {
+            return .disabled
+        }
+        if unavailable {
+            return .warning
+        }
+
+        let quotas = [fiveHourQuota, weeklyQuota].compactMap { $0 }
+        guard quotas.isEmpty == false else {
+            return status
+        }
+
+        if quotas.contains(where: { ($0.progressValue ?? 1) <= 0 }) {
+            return .exhausted
+        }
+        if quotas.contains(where: { ($0.progressValue ?? 1) < 0.15 }) {
+            return .warning
+        }
+        return .healthy
+    }
 }
 
 struct Sub2APIUsageSnapshot: Codable, Equatable, Hashable {
@@ -827,6 +865,8 @@ extension APIKeyConfig {
         case .cliProxy:
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
+        case .ccSwitch:
+            return nil
         case .openAICompatible:
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
@@ -843,6 +883,8 @@ extension APIKeyConfig {
         case .sub2api:
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         case .cliProxy:
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .ccSwitch:
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         case .openAICompatible:
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -901,6 +943,8 @@ extension APIKeyConfig {
             return "--"
         case .cliProxy:
             return "--"
+        case .ccSwitch:
+            return "--"
         case .openAICompatible:
             return "--"
         }
@@ -913,6 +957,8 @@ extension APIKeyConfig {
         case .sub2api:
             return todayUsedAmountUSD?.usdDescription ?? sub2APIUsage?.todayDescription ?? "--"
         case .cliProxy:
+            return "--"
+        case .ccSwitch:
             return "--"
         case .openAICompatible:
             return "--"
@@ -959,6 +1005,8 @@ extension APIKeyConfig {
             return "--"
         case .cliProxy:
             return "--"
+        case .ccSwitch:
+            return "--"
         case .openAICompatible:
             return "--"
         }
@@ -1004,6 +1052,8 @@ extension APIKeyConfig {
 
             return 0
         case .cliProxy:
+            return 0
+        case .ccSwitch:
             return 0
         case .openAICompatible:
             return 0

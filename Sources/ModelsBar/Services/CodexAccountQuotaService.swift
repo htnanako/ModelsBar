@@ -379,7 +379,11 @@ struct CodexAccountQuotaService {
             return fallback
         }
 
-        if windows.contains(where: { ($0.usedPercent ?? 0) >= 100 || ($0.remaining ?? 1) <= 0 }) {
+        if windows.contains(where: { ($0.progressValue ?? 1) <= 0 }) {
+            return .exhausted
+        }
+
+        if windows.contains(where: { ($0.progressValue ?? 1) < 0.15 }) {
             return .warning
         }
 
