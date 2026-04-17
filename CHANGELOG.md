@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/htnanako/ModelsBar/compare/v1.2.0...v1.2.1) (2026-04-17)
+
+
+### Bug Fixes
+
+* 🐛 模型连通性测试界面添加搜索 ([7d14d2c](https://github.com/htnanako/ModelsBar/commit/7d14d2cc77aa5a4fa4f8594a66375db129b60c72))
+
 ## [1.2.0](https://github.com/htnanako/ModelsBar/compare/v1.1.1...v1.2.0) (2026-04-16)
 
 
