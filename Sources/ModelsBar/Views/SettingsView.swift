@@ -1070,6 +1070,7 @@ private struct ModelConnectivitySheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var state: ModelsBarState
     @State private var selectedKeyID: UUID?
+    @State private var modelSearchText = ""
 
     let providerID: UUID
 
@@ -1130,6 +1131,7 @@ private struct ModelConnectivitySheet: View {
                                         isSelected: selectedKeyID == apiKey.id
                                     ) {
                                         selectedKeyID = apiKey.id
+                                        modelSearchText = ""
                                     }
                                 }
                             }
@@ -1137,7 +1139,11 @@ private struct ModelConnectivitySheet: View {
                         }
 
                         if let apiKey = selectedKey(provider) {
-                            ConnectivityKeyPanel(provider: provider, apiKey: apiKey)
+                            ConnectivityKeyPanel(
+                                searchText: $modelSearchText,
+                                provider: provider,
+                                apiKey: apiKey
+                            )
                         } else {
                             CompactEmptyRow(title: "请选择一个 Key", systemImage: "cursorarrow.click")
                         }
@@ -1186,12 +1192,12 @@ private struct ModelConnectivitySheet: View {
         if provider.keys.isEmpty {
             panelHeight = 150
         } else if let apiKey = selectedKey(provider) {
-            let recordCount = state.modelRecords(providerID: provider.id, keyID: apiKey.id).count
+            let recordCount = filteredRecords(for: apiKey, providerID: provider.id).count
             if recordCount == 0 {
-                panelHeight = 258
+                panelHeight = 312
             } else {
                 let visibleRows = min(recordCount, 5)
-                panelHeight = min(248 + CGFloat(visibleRows) * 96, 620)
+                panelHeight = min(302 + CGFloat(visibleRows) * 96, 674)
             }
         } else {
             panelHeight = 150
@@ -1214,16 +1220,25 @@ private struct ModelConnectivitySheet: View {
             return "先完成授权并同步账号 Keys。"
         }
     }
+
+    private func filteredRecords(for apiKey: APIKeyConfig, providerID: UUID) -> [ModelRecord] {
+        filterModelRecords(
+            state.modelRecords(providerID: providerID, keyID: apiKey.id),
+            query: modelSearchText
+        )
+    }
 }
 
 private struct ConnectivityKeyPanel: View {
     @EnvironmentObject private var state: ModelsBarState
+    @Binding var searchText: String
 
     let provider: ProviderConfig
     let apiKey: APIKeyConfig
 
     var body: some View {
         let records = state.modelRecords(providerID: provider.id, keyID: apiKey.id)
+        let filteredRecords = filterModelRecords(records, query: searchText)
 
         SettingsGlassCard(highlight: .subtle) {
             VStack(alignment: .leading, spacing: 18) {
@@ -1243,19 +1258,22 @@ private struct ConnectivityKeyPanel: View {
                     Spacer(minLength: 0)
 
                     HStack(spacing: 10) {
-                        InlineMetric(title: "模型", value: "\(records.count)", tint: .purple)
+                        InlineMetric(title: "模型", value: modelCountDescription(totalCount: records.count, filteredCount: filteredRecords.count), tint: .purple)
                         InlineMetric(title: "今日", value: apiKey.todayUsageDescription(for: provider.type), tint: .blue)
                         InlineMetric(title: "Key 可用", value: availableQuotaDescription(apiKey), tint: .mint)
                     }
                 }
 
-                HStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    if records.isEmpty == false {
+                        ConnectivitySearchField(text: $searchText)
+                            .frame(maxWidth: .infinity)
+                    }
+
                     SettingsActionButton(title: "刷新", systemImage: "arrow.clockwise") {
                         Task { await state.refreshKeyInfo(providerID: provider.id, keyID: apiKey.id) }
                     }
                     .disabled(state.isWorking || canRefreshKey == false)
-
-                    Spacer(minLength: 0)
                 }
 
                 if records.isEmpty {
@@ -1264,10 +1282,16 @@ private struct ConnectivityKeyPanel: View {
                         message: canRefreshKey ? "先刷新一次模型列表，再进行单模型测试。" : "回到设置页为这个 Key 补全完整值，再刷新模型和额度。",
                         systemImage: canRefreshKey ? "cube.transparent" : "key.horizontal"
                     )
+                } else if filteredRecords.isEmpty {
+                    ConnectivityEmptyState(
+                        title: "没有找到匹配模型",
+                        message: "换个关键词试试，或清空搜索后查看完整模型列表。",
+                        systemImage: "magnifyingglass"
+                    )
                 } else {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 10) {
-                            ForEach(records) { record in
+                            ForEach(filteredRecords) { record in
                                 ConnectivityModelRow(provider: provider, apiKey: apiKey, record: record)
                             }
                         }
@@ -1285,6 +1309,14 @@ private struct ConnectivityKeyPanel: View {
 
     private var canRefreshKey: Bool {
         provider.type != .newapi || apiKey.requestValue(for: .newapi) != nil
+    }
+
+    private func modelCountDescription(totalCount: Int, filteredCount: Int) -> String {
+        hasActiveSearch ? "\(filteredCount)/\(totalCount)" : "\(totalCount)"
+    }
+
+    private var hasActiveSearch: Bool {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 }
 
@@ -1582,6 +1614,35 @@ private struct ConnectivityEmptyState: View {
         .padding(.vertical, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(SettingsSurface(cornerRadius: 20, highlight: .soft))
+    }
+}
+
+private struct ConnectivitySearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("搜索模型 ID", text: $text)
+                .textFieldStyle(.plain)
+
+            if text.isEmpty == false {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("清空搜索")
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(SettingsInputBackground())
     }
 }
 
@@ -2163,6 +2224,18 @@ private struct CompactEmptyRow: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 8)
+    }
+}
+
+private func filterModelRecords(_ records: [ModelRecord], query: String) -> [ModelRecord] {
+    let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmedQuery.isEmpty == false else {
+        return records
+    }
+
+    let normalizedQuery = trimmedQuery.localizedLowercase
+    return records.filter { record in
+        record.modelID.localizedLowercase.contains(normalizedQuery)
     }
 }
 
