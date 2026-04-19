@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/htnanako/ModelsBar/compare/v1.2.1...v1.2.2) (2026-04-19)
+
+
+### Bug Fixes
+
+* 🐛 修复ccswitch渠道取数及5h/周额度判定错误问题 ([f4fc151](https://github.com/htnanako/ModelsBar/commit/f4fc151f2293bfacdb0cba7d2b6795dae6e09c1c))
+
 ## [1.2.1](https://github.com/htnanako/ModelsBar/compare/v1.2.0...v1.2.1) (2026-04-17)
 
 
