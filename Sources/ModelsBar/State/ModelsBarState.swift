@@ -23,6 +23,8 @@ enum ModelAggregateVisualState: Equatable {
 
 @MainActor
 final class ModelsBarState: ObservableObject {
+    private static let maxConcurrentProviderSyncs = 4
+
     @Published var data: AppData
     @Published var selectedProviderID: UUID?
     @Published var isWorking = false
@@ -465,12 +467,28 @@ final class ModelsBarState: ObservableObject {
         }
 
         isWorking = true
-        statusMessage = "正在同步全部站点"
+        statusMessage = "正在同步全部站点（0/\(providerIDs.count)）"
 
-        for providerID in providerIDs {
-            beginProviderWork(providerID)
-            await syncManagedTokens(providerID: providerID, managesWorkingState: false)
-            endProviderWork(providerID)
+        let scheduler = ProviderSyncScheduler(providerIDs: providerIDs)
+        let progress = ProviderSyncProgress(totalCount: providerIDs.count)
+        let workerCount = min(Self.maxConcurrentProviderSyncs, providerIDs.count)
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<workerCount {
+                group.addTask { [weak self] in
+                    guard let self else {
+                        return
+                    }
+
+                    while let providerID = await scheduler.nextProviderID() {
+                        await self.syncProviderDuringBulkRefresh(providerID: providerID)
+                        let completed = await progress.markCompleted()
+                        await MainActor.run {
+                            self.statusMessage = "正在同步全部站点（\(completed)/\(providerIDs.count)）"
+                        }
+                    }
+                }
+            }
         }
 
         statusMessage = "全部站点同步完成"
@@ -854,6 +872,15 @@ final class ModelsBarState: ObservableObject {
             await refreshKeyInfo(providerID: providerID, keyID: apiKey.id, managesWorkingState: false)
         }
         setStatus("已刷新 \(enabledKeys.count) 个 API Key", providerID: providerID)
+    }
+
+    private func syncProviderDuringBulkRefresh(providerID: UUID) async {
+        beginProviderWork(providerID)
+        defer {
+            endProviderWork(providerID)
+        }
+
+        await syncManagedTokens(providerID: providerID, managesWorkingState: false)
     }
 
     private func setStatus(_ message: String, providerID: UUID? = nil) {
@@ -1698,5 +1725,38 @@ final class ModelsBarState: ObservableObject {
         let month = components.month ?? 1
         let day = components.day ?? 1
         return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+}
+
+private actor ProviderSyncScheduler {
+    private let providerIDs: [UUID]
+    private var nextIndex = 0
+
+    init(providerIDs: [UUID]) {
+        self.providerIDs = providerIDs
+    }
+
+    func nextProviderID() -> UUID? {
+        guard nextIndex < providerIDs.count else {
+            return nil
+        }
+
+        let providerID = providerIDs[nextIndex]
+        nextIndex += 1
+        return providerID
+    }
+}
+
+private actor ProviderSyncProgress {
+    private let totalCount: Int
+    private var completedCount = 0
+
+    init(totalCount: Int) {
+        self.totalCount = totalCount
+    }
+
+    func markCompleted() -> Int {
+        completedCount += 1
+        return min(completedCount, totalCount)
     }
 }

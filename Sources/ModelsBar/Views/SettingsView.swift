@@ -8,6 +8,13 @@ struct SettingsView: View {
     @State private var draggedProviderID: UUID?
 
     private static let coordinateSpaceName = "SettingsSidebarReorderSpace"
+    private static let addProviderMenuTypes: [ProviderType] = [
+        .newapi,
+        .sub2api,
+        .cliProxy,
+        .ccSwitch,
+        .openAICompatible
+    ]
 
     var body: some View {
         ZStack {
@@ -85,24 +92,28 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
 
-                HeaderSymbolButton(systemImage: "arrow.clockwise") {
-                    Task { await state.syncAllManagedTokens() }
-                }
-                .help("刷新全部站点")
-                .disabled(state.isWorking || state.syncableProviderCount == 0)
-
-                Menu {
-                    ForEach(ProviderType.allCases) { type in
-                        Button(type.title) {
-                            addProviderSheetType = type
-                        }
+                HStack(spacing: 6) {
+                    HeaderSymbolButton(systemImage: "arrow.clockwise") {
+                        Task { await state.syncAllManagedTokens() }
                     }
-                } label: {
-                    HeaderSymbolLabel(systemImage: "plus")
+                    .help("刷新全部站点")
+                    .disabled(state.isWorking || state.syncableProviderCount == 0)
+
+                    Menu {
+                        ForEach(Self.addProviderMenuTypes) { type in
+                            Button(type.title) {
+                                addProviderSheetType = type
+                            }
+                        }
+                    } label: {
+                        HeaderSymbolLabel(systemImage: "plus")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("添加站点")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .help("添加站点")
+                .frame(maxWidth: .infinity, alignment: .trailing)
                 .sheet(item: $addProviderSheetType) { providerType in
                     AddProviderSheet(providerType: providerType)
                         .environmentObject(state)
@@ -118,7 +129,7 @@ struct SettingsView: View {
                 )
 
                 SidebarHeaderMetric(
-                    title: "正常",
+                    title: "API Keys",
                     value: "\(state.healthyKeyCount)",
                     systemImage: "checkmark.circle.fill",
                     tint: .green
@@ -569,7 +580,7 @@ private struct ProviderDetailView: View {
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 12) {
-                        ForEach(provider.codexAccounts) { account in
+                        ForEach(provider.codexAccounts, id: \.fileName) { account in
                             CodexAccountRow(providerID: providerID, account: account)
                         }
                     }
@@ -1700,21 +1711,25 @@ private struct SettingsWindowBackground: View {
 }
 
 private struct SettingsWindowConfigurator: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
-            configureWindow(from: view)
+            configureWindow(from: view, coordinator: context.coordinator)
         }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
-            configureWindow(from: nsView)
+            configureWindow(from: nsView, coordinator: context.coordinator)
         }
     }
 
-    private func configureWindow(from view: NSView) {
+    private func configureWindow(from view: NSView, coordinator: Coordinator) {
         guard let window = view.window else {
             return
         }
@@ -1729,7 +1744,60 @@ private struct SettingsWindowConfigurator: NSViewRepresentable {
         if #available(macOS 11.0, *) {
             window.titlebarSeparatorStyle = .none
         }
+
+        coordinator.scheduleDisplayRefresh(for: window)
     }
+
+    @MainActor
+    final class Coordinator {
+        private weak var trackedWindow: NSWindow?
+        private var refreshWorkItem: DispatchWorkItem?
+
+        func scheduleDisplayRefresh(for window: NSWindow) {
+            trackedWindow = window
+            refreshWorkItem?.cancel()
+
+            let workItem = DispatchWorkItem { [weak self, weak window] in
+                guard let self,
+                      let window,
+                      self.trackedWindow === window,
+                      let contentView = window.contentView else {
+                    return
+                }
+
+                refreshDisplayTree(contentView)
+
+                DispatchQueue.main.async { [weak self, weak window] in
+                    guard let self,
+                          let window,
+                          self.trackedWindow === window,
+                          let contentView = window.contentView else {
+                        return
+                    }
+
+                    refreshDisplayTree(contentView)
+                }
+            }
+
+            refreshWorkItem = workItem
+            DispatchQueue.main.async(execute: workItem)
+        }
+    }
+}
+
+@MainActor
+private func refreshDisplayTree(_ view: NSView) {
+    view.needsLayout = true
+    view.needsDisplay = true
+    view.layoutSubtreeIfNeeded()
+    view.layer?.setNeedsDisplay()
+
+    for subview in view.subviews {
+        refreshDisplayTree(subview)
+    }
+
+    view.displayIfNeeded()
+    view.layer?.displayIfNeeded()
 }
 
 private struct SettingsGlassCard<Content: View>: View {
@@ -2102,7 +2170,7 @@ private struct HeaderSymbolLabel: View {
         Image(systemName: systemImage)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.primary)
-            .frame(width: 18, height: 34)
+            .frame(width: 32, height: 32)
             .contentShape(Rectangle())
     }
 }

@@ -63,7 +63,7 @@ struct CodexAccountQuotaService {
 
             accounts.append(
                 CodexAccountSnapshot(
-                    id: resolvedAccountID ?? resolvedEmail,
+                    id: authFile.name,
                     fileName: authFile.name,
                     email: resolvedEmail,
                     planType: resolvedPlanType,
@@ -201,16 +201,12 @@ struct CodexAccountQuotaService {
             return nil
         }
 
-        let primary = quotaWindowFromWHAM(
-            rateLimit["primary_window"] as? [String: Any],
-            fallbackWindowSeconds: 18_000
-        )
-        let secondary = quotaWindowFromWHAM(
-            rateLimit["secondary_window"] as? [String: Any],
-            fallbackWindowSeconds: 604_800
-        )
+        let quotaWindows = [
+            quotaWindowFromWHAM(rateLimit["primary_window"] as? [String: Any]),
+            quotaWindowFromWHAM(rateLimit["secondary_window"] as? [String: Any])
+        ].compactMap(\.self)
 
-        guard primary != nil || secondary != nil else {
+        guard quotaWindows.isEmpty == false else {
             return nil
         }
 
@@ -229,21 +225,28 @@ struct CodexAccountQuotaService {
             email: stringValue(dictionary["email"]),
             accountID: stringValue(dictionary["account_id"]),
             planType: stringValue(dictionary["plan_type"]),
-            fiveHourQuota: primary,
-            weeklyQuota: secondary,
+            fiveHourQuota: bestQuotaWindow(
+                near: 300,
+                from: quotaWindows.filter { $0.windowMinutes < 360 }
+            ),
+            weeklyQuota: bestQuotaWindow(
+                near: 10_080,
+                from: quotaWindows.filter { 9_000...11_000 ~= $0.windowMinutes }
+            ),
             message: message
         )
     }
 
     private func quotaWindowFromWHAM(
-        _ dictionary: [String: Any]?,
-        fallbackWindowSeconds: Int
+        _ dictionary: [String: Any]?
     ) -> CodexQuotaSnapshot? {
         guard let dictionary else {
             return nil
         }
 
-        let windowSeconds = intValue(dictionary["limit_window_seconds"]) ?? fallbackWindowSeconds
+        guard let windowSeconds = intValue(dictionary["limit_window_seconds"]) else {
+            return nil
+        }
         let usedPercent = intValue(dictionary["used_percent"])
         let resetsAt = parseDate(dictionary["reset_at"])
 

@@ -459,7 +459,7 @@ struct MenuBarPanelView: View {
 
     private func codexAccountCards(_ provider: ProviderConfig) -> some View {
         VStack(spacing: 8) {
-            ForEach(provider.codexAccounts) { account in
+            ForEach(provider.codexAccounts, id: \.fileName) { account in
                 MenuCodexAccountCard(providerID: provider.id, account: account)
             }
         }
